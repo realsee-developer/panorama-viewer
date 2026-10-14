@@ -176,7 +176,7 @@ async function handleFile(file) {
   showLoader(true);
   hideToast();
   try {
-    const result = await loadPanorama(file, viewer.renderer);
+    const result = await loadPanorama(file);
 
     // Apply the panorama (SDR texture or HDR gain-map descriptor).
     viewer.setPanorama(result.isHDR ? result.hdr : result.texture);

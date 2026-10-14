@@ -1,16 +1,17 @@
 /**
- * loader.js — Decode dropped files into equirectangular textures.
+ * loader.js — Decode dropped files into equirectangular panorama sources.
  *
  * Supported inputs:
- *   - Ultra HDR JPG (gain-map): decoded via three.js UltraHDRLoader to a
- *     half-float HDR DataTexture.
+ *   - Ultra HDR JPG (gain-map): parsed in-house (MPF + XMP) into an SDR base
+ *     texture + gain-map texture + metadata, composited to HDR on the GPU in
+ *     viewer.js (so maxDisplayBoost is adjustable live).
  *   - Plain JPG / PNG / AVIF (SDR): decoded via createImageBitmap.
  *
  * Aspect-ratio policy (equirectangular panoramas are 2:1):
  *   - ratio < 2:1  -> reject (not a panorama / too tall).
  *   - ratio == 2:1 -> use as-is.
  *   - ratio > 2:1  -> too wide/short; letterbox onto a 2:1 canvas (black bars
- *     top & bottom) so the sphere mapping stays correct.
+ *     top & bottom) so the equirectangular mapping stays correct.
  */
 
 import {
@@ -87,19 +88,21 @@ export class AspectRatioError extends Error {
 }
 
 /**
- * Load and decode a File into a result:
- *   { texture, format, width, height, ratio, isHDR, previewBitmap }
+ * Load and decode a File into a panorama source descriptor:
+ *   - SDR:  { texture, format, width, height, ratio, isHDR:false, letterboxed, previewBitmap }
+ *   - HDR:  { hdr: { sdrTexture, gainTexture, gainMeta }, texture:null, format, ... isHDR:true }
  *
- * `texture` is ready to assign to scene.background with equirectangular mapping.
- * `previewBitmap` is an ImageBitmap (SDR) used for the minimap thumbnail.
+ * For SDR, `texture` is ready to assign to scene.background. For HDR, the
+ * `hdr` ingredients are composited on the GPU by the viewer. `previewBitmap`
+ * is an SDR ImageBitmap used for the minimap thumbnail.
  */
-export async function loadPanorama(file, renderer) {
+export async function loadPanorama(file) {
   const buffer = await file.arrayBuffer();
   const format = sniffFormat(buffer);
   const hdr = format === 'jpeg' && isUltraHDR(buffer);
 
   if (hdr) {
-    return loadUltraHDR(buffer, renderer);
+    return loadUltraHDR(buffer);
   }
   return loadSDR(buffer, format);
 }
@@ -123,7 +126,7 @@ export async function loadPanorama(file, renderer) {
  * (@monogrid/gainmap-js is also unusable here: its decoder relies on
  *  WebGLRenderer.readRenderTargetPixels, which WebGPURenderer does not have.)
  */
-async function loadUltraHDR(buffer /*, renderer */) {
+async function loadUltraHDR(buffer) {
   return loadUltraHDRRobust(buffer);
 }
 
@@ -402,7 +405,7 @@ async function loadSDR(buffer, format) {
   let bitmap;
   try {
     bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
-  } catch (e) {
+  } catch {
     throw new Error(
       `Could not decode image (format: ${format}). This browser may not support it.`
     );
