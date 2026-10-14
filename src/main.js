@@ -214,18 +214,28 @@ function setupHDRControl(isHDR) {
     return;
   }
 
-  // Slider range: 1× (pure SDR, no boost) up to the content's full HDR
-  // capacity. Default to the full capacity (full HDR intent).
-  const maxLinear = Math.max(1.01, info.hdrCapacityMaxLinear);
-  hdrBoost.min = '1';
-  hdrBoost.max = String(maxLinear.toFixed(2));
-  hdrBoost.step = String(Math.max(0.01, (maxLinear - 1) / 200).toFixed(3));
-  hdrBoost.value = String(maxLinear.toFixed(2));
-  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (完整)`;
-  updateBoostLabel(maxLinear);
+  // Slider range reflects realistic *display* HDR headroom, not the content's
+  // raw capacity. HDR headroom is measured in stops (log2):
+  //   SDR = 0 stops (1×), typical HDR displays ≈ 1.5–3 stops (≈3–8×),
+  //   a great HDR display (e.g. modern MacBook Pro) ≈ 4 stops (16×).
+  // So we cap the slider at 4 stops (16×) regardless of the (often huge)
+  // HDRCapacityMax the file declares, and default to a strong-but-sane 3 stops
+  // (8×). The slider never exceeds the content's own capacity either.
+  const MAX_STOPS = 4; // 16×
+  const DEFAULT_STOPS = 3; // 8×
+  const contentMaxLinear = Math.max(1.01, info.hdrCapacityMaxLinear);
+  const maxLinear = Math.min(Math.pow(2, MAX_STOPS), contentMaxLinear);
+  const defaultLinear = Math.min(Math.pow(2, DEFAULT_STOPS), maxLinear);
 
-  // Apply the initial (full) boost.
-  viewer.setMaxDisplayBoost(maxLinear);
+  hdrBoost.min = '1';
+  hdrBoost.max = maxLinear.toFixed(2);
+  hdrBoost.step = Math.max(0.01, (maxLinear - 1) / 200).toFixed(3);
+  hdrBoost.value = defaultLinear.toFixed(2);
+  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (${MAX_STOPS} 档)`;
+  updateBoostLabel(defaultLinear);
+
+  // Apply the initial boost.
+  viewer.setMaxDisplayBoost(defaultLinear);
 
   if (!hdrBoostBound) {
     hdrBoost.addEventListener('input', () => {
