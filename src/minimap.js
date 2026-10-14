@@ -2,8 +2,16 @@
  * minimap.js — Equirectangular thumbnail with current-viewport overlay.
  *
  * The minimap is a 2:1 canvas showing the whole panorama. The region the user
- * is currently looking at is kept bright; everything else is darkened. The
- * mapping between screen (lon/lat/fov) and the equirectangular image:
+ * is currently looking at is kept bright; everything else is darkened.
+ *
+ * The visible region of a perspective camera is NOT a rectangle on an
+ * equirectangular map — straight screen edges become curves (and bow strongly
+ * near the poles). So we trace the actual view frustum: we sample points along
+ * the four screen edges, turn each into a world-space ray direction, convert
+ * that to lon/lat, and draw the resulting polygon. Horizontal wraparound is
+ * handled by drawing the polygon shifted by ±W.
+ *
+ * Equirect mapping:
  *   x = (lon + 180) / 360 * W      (lon in [-180,180])
  *   y = (90 - lat) / 180 * H       (lat in [-90,90])
  *
@@ -69,74 +77,138 @@ export class Minimap {
     const H = this._h;
 
     ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(this.bitmap, 0, 0, W, H);
 
-    // Darken the whole map, then "cut out" the visible viewport rectangle
-    // by redrawing the bright image clipped to that region.
-    ctx.save();
+    // Base: darkened whole map.
+    ctx.drawImage(this.bitmap, 0, 0, W, H);
     ctx.fillStyle = 'rgba(0,0,0,0.62)';
     ctx.fillRect(0, 0, W, H);
-    ctx.restore();
 
-    // Compute viewport footprint in lon/lat.
-    const fovY = this.view.fov;
-    const fovX = Math.min(
-      360,
-      2 *
-        (Math.atan(Math.tan((fovY * Math.PI) / 360) * this.aspect) * 180) /
-          Math.PI
-    );
+    // Build the frustum outline (array of {x,y} in map pixels; x may wrap).
+    const loops = this._frustumLoops(W, H);
+    if (loops.length === 0) return;
 
-    const cx = ((this.view.lon + 180) / 360) * W;
-    const halfW = (fovX / 360) * W;
-    const halfH = (fovY / 180) * H;
-    const cy = ((90 - this.view.lat) / 180) * H;
-
-    // The viewport can wrap horizontally; draw up to two bright slices.
-    const slices = this._wrapSlices(cx - halfW, cx + halfW, W);
+    // Reveal the bright image inside the frustum region (clip + redraw).
     ctx.save();
-    for (const [x0, x1] of slices) {
-      const y0 = Math.max(0, cy - halfH);
-      const y1 = Math.min(H, cy + halfH);
-      ctx.beginPath();
-      ctx.rect(x0, y0, x1 - x0, y1 - y0);
-      ctx.clip();
-      ctx.drawImage(this.bitmap, 0, 0, W, H);
-      ctx.restore();
-      ctx.save();
-    }
+    ctx.beginPath();
+    for (const loop of loops) this._tracePath(ctx, loop);
+    ctx.clip();
+    ctx.drawImage(this.bitmap, 0, 0, W, H);
     ctx.restore();
 
-    // Viewport outline + crosshair at center.
+    // Outline.
     ctx.strokeStyle = '#e2231a';
     ctx.lineWidth = 1.5;
-    for (const [x0, x1] of slices) {
-      const y0 = Math.max(0, cy - halfH);
-      const y1 = Math.min(H, cy + halfH);
-      ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
-    }
-    // center dot
+    ctx.beginPath();
+    for (const loop of loops) this._tracePath(ctx, loop);
+    ctx.stroke();
+
+    // Center (look direction) dot.
+    const c = this._dirToMap(this._viewDir(0, 0), W, H);
     ctx.fillStyle = '#e2231a';
     ctx.beginPath();
-    ctx.arc(cx % W, cy, 2.5, 0, Math.PI * 2);
+    ctx.arc(((c.x % W) + W) % W, c.y, 2.5, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  /** Split a [x0,x1] range that may exceed [0,W] into wrapped slices. */
-  _wrapSlices(x0, x1, W) {
-    const slices = [];
-    let a = x0;
-    let b = x1;
-    if (b - a >= W) return [[0, W]];
-    a = ((a % W) + W) % W;
-    b = ((b % W) + W) % W;
-    if (a <= b) {
-      slices.push([a, b]);
-    } else {
-      slices.push([a, W]);
-      slices.push([0, b]);
+  _tracePath(ctx, loop) {
+    ctx.moveTo(loop[0].x, loop[0].y);
+    for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i].x, loop[i].y);
+    ctx.closePath();
+  }
+
+  /**
+   * Trace the camera frustum boundary and return it as 1–3 closed loops in map
+   * pixel space (duplicated with ±W offsets so horizontal wrap renders).
+   */
+  _frustumLoops(W, H) {
+    const fovY = (this.view.fov * Math.PI) / 180;
+    const tanY = Math.tan(fovY / 2);
+    const tanX = tanY * this.aspect;
+
+    // Sample the screen-rectangle perimeter (NDC in [-1,1]) and project each
+    // to a world ray -> lon/lat -> map pixel.
+    const N = 24; // samples per edge
+    const pts = [];
+    const edge = (ax, ay, bx, by) => {
+      for (let i = 0; i < N; i++) {
+        const t = i / N;
+        const nx = ax + (bx - ax) * t;
+        const ny = ay + (by - ay) * t;
+        const dir = this._viewDir(nx * tanX, ny * tanY);
+        pts.push(this._dirToLonLat(dir));
+      }
+    };
+    // CCW around the screen rectangle.
+    edge(-1, -1, 1, -1);
+    edge(1, -1, 1, 1);
+    edge(1, 1, -1, 1);
+    edge(-1, 1, -1, -1);
+
+    // Convert lon/lat to continuous map x (unwrapped) + y.
+    const base = [];
+    let prevX = null;
+    for (const { lon, lat } of pts) {
+      let x = ((lon + 180) / 360) * W;
+      const y = ((90 - lat) / 180) * H;
+      // Unwrap longitude so the polyline doesn't jump across the seam.
+      if (prevX !== null) {
+        while (x - prevX > W / 2) x -= W;
+        while (x - prevX < -W / 2) x += W;
+      }
+      base.push({ x, y });
+      prevX = x;
     }
-    return slices;
+
+    // Replicate at -W, 0, +W to cover horizontal wrap; the clip/stroke only
+    // shows the parts overlapping [0, W].
+    return [-W, 0, W].map((off) =>
+      base.map((p) => ({ x: p.x + off, y: p.y }))
+    );
+  }
+
+  /** World ray direction for a screen offset (xTan, yTan) from view center. */
+  _viewDir(xTan, yTan) {
+    const lon = (this.view.lon * Math.PI) / 180;
+    const lat = (this.view.lat * Math.PI) / 180;
+
+    // Camera forward (toward look direction), right, up basis.
+    const f = {
+      x: Math.cos(lat) * Math.sin(lon),
+      y: Math.sin(lat),
+      z: Math.cos(lat) * Math.cos(lon),
+    };
+    // right = normalize(cross(worldUp, f)) with worldUp = (0,1,0)
+    let r = { x: f.z, y: 0, z: -f.x };
+    const rl = Math.hypot(r.x, r.y, r.z) || 1;
+    r = { x: r.x / rl, y: r.y / rl, z: r.z / rl };
+    // up = cross(f, r)
+    const u = {
+      x: f.y * r.z - f.z * r.y,
+      y: f.z * r.x - f.x * r.z,
+      z: f.x * r.y - f.y * r.x,
+    };
+
+    // dir = f + xTan*right + yTan*up  (yTan positive = up on screen)
+    return {
+      x: f.x + xTan * r.x + yTan * u.x,
+      y: f.y + xTan * r.y + yTan * u.y,
+      z: f.z + xTan * r.z + yTan * u.z,
+    };
+  }
+
+  _dirToLonLat(d) {
+    const len = Math.hypot(d.x, d.y, d.z) || 1;
+    const x = d.x / len;
+    const y = d.y / len;
+    const z = d.z / len;
+    const lon = (Math.atan2(x, z) * 180) / Math.PI; // 0 at +Z, matches _viewDir
+    const lat = (Math.asin(Math.max(-1, Math.min(1, y))) * 180) / Math.PI;
+    return { lon, lat };
+  }
+
+  _dirToMap(d, W, H) {
+    const { lon, lat } = this._dirToLonLat(d);
+    return { x: ((lon + 180) / 360) * W, y: ((90 - lat) / 180) * H };
   }
 
   _handleClick(e) {

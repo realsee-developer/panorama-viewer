@@ -66,7 +66,7 @@ export class PanoramaViewer {
   async init() {
     if (!navigator.gpu) {
       throw new Error(
-        '当前浏览器不支持 WebGPU。请使用 Chrome 113+ / Edge 113+ 或开启 WebGPU 的浏览器。'
+        'WebGPU is not supported in this browser. Please use Chrome 113+ / Edge 113+ or a browser with WebGPU enabled.'
       );
     }
 
@@ -114,7 +114,7 @@ export class PanoramaViewer {
       const device = backend?.device;
       const utils = backend?.utils;
       if (!context || !device || !utils) {
-        return { ok: false, error: 'WebGPU context 未就绪' };
+        return { ok: false, error: 'WebGPU context not ready' };
       }
 
       const result = configureContextHDR(context, device, false);

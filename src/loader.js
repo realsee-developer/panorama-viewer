@@ -78,8 +78,8 @@ function latin1(u8, limit) {
 export class AspectRatioError extends Error {
   constructor(ratio, width, height) {
     super(
-      `图片宽高比为 ${ratio.toFixed(3)}:1（${width}×${height}），` +
-        `全景图要求宽高比 ≥ 2:1。请使用等距圆柱（equirectangular）全景图。`
+      `Aspect ratio is ${ratio.toFixed(3)}:1 (${width}×${height}). ` +
+        `Panoramas require an aspect ratio ≥ 2:1. Please use an equirectangular panorama.`
     );
     this.name = 'AspectRatioError';
     this.ratio = ratio;
@@ -143,7 +143,7 @@ async function loadUltraHDRRobust(buffer) {
   const parsed = parseUltraHDRJPEG(buffer);
   if (!parsed) {
     throw new Error(
-      'Ultra HDR: 无法从该文件中解析出 gain map（MPF/XMP 缺失）。'
+      'Ultra HDR: could not parse a gain map from this file (missing MPF/XMP).'
     );
   }
 
@@ -404,7 +404,7 @@ async function loadSDR(buffer, format) {
     bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
   } catch (e) {
     throw new Error(
-      `无法解码图片（格式：${format}）。该浏览器可能不支持此格式。`
+      `Could not decode image (format: ${format}). This browser may not support it.`
     );
   }
 

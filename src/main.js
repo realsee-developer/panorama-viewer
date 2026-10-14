@@ -90,14 +90,14 @@ function bindUI() {
         const base = import.meta.env.BASE_URL || '/';
         const url = base.replace(/\/$/, '') + '/equirect.uhdr.jpg';
         const resp = await fetch(url);
-        if (!resp.ok) throw new Error('示例全景加载失败 (' + resp.status + ')');
+        if (!resp.ok) throw new Error('Failed to load sample (' + resp.status + ')');
         const blob = await resp.blob();
         const file = new File([blob], 'equirect.uhdr.jpg', {
           type: 'image/jpeg',
         });
         await handleFile(file);
       } catch (e) {
-        showToast(e.message || '示例加载失败', 6000);
+        showToast(e.message || 'Failed to load sample', 6000);
         showLoader(false);
       }
     });
@@ -173,7 +173,7 @@ async function handleFile(file) {
     metaFormat.textContent = result.format;
     metaRes.textContent = `${result.width} × ${result.height}`;
     metaRatio.textContent =
-      result.ratio.toFixed(3) + ' : 1' + (result.letterboxed ? ' (上下留黑边)' : '');
+      result.ratio.toFixed(3) + ' : 1' + (result.letterboxed ? ' (letterboxed)' : '');
     setHdrMeta(result.isHDR, hdrResult);
 
     // Minimap.
@@ -186,14 +186,14 @@ async function handleFile(file) {
     renderHDRBadge(hdrResult);
 
     if (result.letterboxed) {
-      showToast('图片宽高比大于 2:1，已自动上下留黑边。', 4000);
+      showToast('Aspect ratio exceeds 2:1 — letterboxed (black bars top & bottom).', 4000);
     }
   } catch (err) {
     console.error(err);
     if (err instanceof AspectRatioError) {
       showToast(err.message, 9000);
     } else {
-      showToast(err.message || '加载失败', 8000);
+      showToast(err.message || 'Failed to load image', 8000);
     }
   } finally {
     showLoader(false);
@@ -231,7 +231,7 @@ function setupHDRControl(isHDR) {
   hdrBoost.max = maxLinear.toFixed(2);
   hdrBoost.step = Math.max(0.01, (maxLinear - 1) / 200).toFixed(3);
   hdrBoost.value = defaultLinear.toFixed(2);
-  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (${MAX_STOPS} 档)`;
+  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (${MAX_STOPS} stops)`;
   updateBoostLabel(defaultLinear);
 
   // Apply the initial boost.
@@ -256,15 +256,15 @@ function updateBoostLabel(linear) {
 // ---------- HDR status rendering ----------
 function renderHDRBadge(hdrResult) {
   if (displayHDR.supported) {
-    hdrBadgeVal.textContent = '支持 (dynamic-range: high)';
+    hdrBadgeVal.textContent = 'Supported (dynamic-range: high)';
     hdrBadgeVal.className = 'hdrBadge__val ok';
   } else {
-    hdrBadgeVal.textContent = '不支持 / SDR 显示器';
+    hdrBadgeVal.textContent = 'Not supported / SDR display';
     hdrBadgeVal.className = 'hdrBadge__val no';
   }
   // If we actually activated HDR output on the canvas, note it.
   if (hdrResult && hdrResult.ok) {
-    hdrBadgeVal.textContent = `HDR 输出中 · ${hdrResult.colorSpace} / ${hdrResult.toneMapping}`;
+    hdrBadgeVal.textContent = `HDR output · ${hdrResult.colorSpace} / ${hdrResult.toneMapping}`;
     hdrBadgeVal.className = 'hdrBadge__val ok';
   }
 }
@@ -276,10 +276,10 @@ function setHdrMeta(isHDR, hdrResult) {
     return;
   }
   if (hdrResult.ok) {
-    metaHdr.textContent = `真 HDR · ${hdrResult.format}`;
+    metaHdr.textContent = `True HDR · ${hdrResult.format}`;
     metaHdr.className = 'on';
   } else {
-    metaHdr.textContent = 'HDR 内容 (画布回退 SDR)';
+    metaHdr.textContent = 'HDR content (canvas fell back to SDR)';
     metaHdr.className = 'on';
   }
 }

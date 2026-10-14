@@ -92,13 +92,6 @@ body {
   transition: border-color 0.2s ease;
 }
 
-.dropzone__index {
-  font-size: 12px;
-  letter-spacing: 0.25em;
-  color: var(--accent);
-  margin-bottom: 28px;
-}
-
 .dropzone__title {
   font-size: clamp(40px, 9vw, 92px);
   line-height: 0.92;
