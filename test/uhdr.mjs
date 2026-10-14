@@ -52,7 +52,6 @@ const FILE = resolve(__dirname, '../public/equirect.uhdr.jpg');
   out.hdrMeta = await page.$eval('#metaHdr', (el) => el.textContent.trim());
   out.hdrBadge = await page.evaluate(() => ({
     display: document.getElementById('statDisplay').textContent.trim(),
-    image: document.getElementById('statImage').textContent.trim(),
     canvas: document.getElementById('statCanvas').textContent.trim(),
   }));
 

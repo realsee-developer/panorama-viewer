@@ -25,7 +25,6 @@ const hdrBoostMax = $('hdrBoostMax');
 const minimapCanvas = $('minimap');
 const hdrBadge = $('hdrBadge');
 const statDisplay = $('statDisplay');
-const statImage = $('statImage');
 const statCanvas = $('statCanvas');
 const mapToggle = $('mapToggle');
 const toast = $('toast');
@@ -36,9 +35,8 @@ let minimap;
 let displayHDR;
 
 // Persistent status so the bottom-left badge shows the same rows before and
-// after loading (display capability / image range / canvas output format).
+// after loading (display capability / canvas output format).
 const status = {
-  imageIsHDR: null, // null = no image yet
   canvas: null, // hdrResult when HDR output active, else null
 };
 
@@ -192,7 +190,6 @@ async function handleFile(file) {
     // Reveal viewer.
     dropzone.classList.add('hidden-fade');
     mapToggle.hidden = false;
-    status.imageIsHDR = result.isHDR;
     renderHDRBadge(hdrResult);
 
     if (result.letterboxed) {
@@ -276,19 +273,7 @@ function renderHDRBadge(hdrResult) {
     statDisplay.className = 'hdrBadge__val no';
   }
 
-  // Row 2 — the loaded image's dynamic range.
-  if (status.imageIsHDR === null) {
-    statImage.textContent = 'No image';
-    statImage.className = 'hdrBadge__val no';
-  } else if (status.imageIsHDR) {
-    statImage.textContent = 'Ultra HDR';
-    statImage.className = 'hdrBadge__val ok';
-  } else {
-    statImage.textContent = 'SDR';
-    statImage.className = 'hdrBadge__val no';
-  }
-
-  // Row 3 — actual canvas output format.
+  // Row 2 — actual canvas output format.
   if (status.canvas && status.canvas.ok) {
     const cs = status.canvas.colorSpace === 'display-p3' ? 'P3' : status.canvas.colorSpace;
     statCanvas.textContent = `HDR ${status.canvas.format} · ${cs}`;
