@@ -50,9 +50,11 @@ const FILE = resolve(__dirname, '../public/equirect.uhdr.jpg');
   out.res = await page.$eval('#metaRes', (el) => el.textContent.trim());
   out.ratio = await page.$eval('#metaRatio', (el) => el.textContent.trim());
   out.hdrMeta = await page.$eval('#metaHdr', (el) => el.textContent.trim());
-  out.hdrBadge = await page.$eval('#hdrBadgeVal', (el) =>
-    el.textContent.trim()
-  );
+  out.hdrBadge = await page.evaluate(() => ({
+    display: document.getElementById('statDisplay').textContent.trim(),
+    image: document.getElementById('statImage').textContent.trim(),
+    canvas: document.getElementById('statCanvas').textContent.trim(),
+  }));
 
   // The HDR boost control should be visible with a sensible range.
   out.hdrControl = await page.evaluate(() => ({

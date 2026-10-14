@@ -89,7 +89,7 @@ async function canvasHasContent(page) {
 
   // WebGPU availability inside this Chrome
   results.webgpu = await page.evaluate(() => !!navigator.gpu);
-  results.hdrBadge = await readText(page, 'hdrBadgeVal');
+  results.hdrBadge = await readText(page, 'statDisplay');
 
   // --- Case 1: too-tall image should be rejected (toast shown, panel hidden)
   await dropFile(page, fixtures.tooTall);
