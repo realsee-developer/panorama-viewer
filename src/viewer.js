@@ -82,21 +82,61 @@ export class PanoramaViewer {
   /**
    * Attempt to switch the WebGPU canvas to HDR output. Must be called after
    * init() (context exists). Returns the HDR config result.
+   *
+   * Reconfiguring the swapchain to rgba16float is not enough on its own:
+   * three.js's WebGPU backend allocates its internal color buffer and picks
+   * its render-pass color format from `utils.getPreferredCanvasFormat()`,
+   * which returns the 8-bit preferred format (e.g. bgra8unorm). That causes a
+   * format mismatch at MSAA-resolve / present time ("resolve target format
+   * (RGBA16Float) does not match the color attachment format (BGRA8Unorm)"),
+   * invalidating every frame's command buffer -> black screen.
+   *
+   * So we also override `getPreferredCanvasFormat` to report rgba16float and
+   * force the backend to rebuild its framebuffer textures.
    */
   enableHDR() {
     try {
       const backend = this.renderer.backend;
       const context = backend?.context;
       const device = backend?.device;
-      if (!context || !device) {
+      const utils = backend?.utils;
+      if (!context || !device || !utils) {
         return { ok: false, error: 'WebGPU context 未就绪' };
       }
+
       const result = configureContextHDR(context, device, false);
-      this._hdrActive = result.ok;
+      if (!result.ok) {
+        this._hdrActive = false;
+        return result;
+      }
+
+      // Make three.js render its internal buffers in the same HDR format as
+      // the reconfigured swapchain.
+      if (!this._origGetPreferredCanvasFormat) {
+        this._origGetPreferredCanvasFormat =
+          utils.getPreferredCanvasFormat.bind(utils);
+      }
+      utils.getPreferredCanvasFormat = () => 'rgba16float';
+
+      // Force the backend to recreate its color/depth framebuffer textures
+      // with the new format. Nudging the size triggers reallocation.
+      this._forceFramebufferRebuild();
+
+      this._hdrActive = true;
       return result;
     } catch (e) {
       return { ok: false, error: e.message };
     }
+  }
+
+  /** Force three's WebGPU backend to rebuild framebuffer textures. */
+  _forceFramebufferRebuild() {
+    const w = this.canvas.clientWidth;
+    const h = this.canvas.clientHeight;
+    // Toggle size so the backend's cached framebuffer is invalidated and
+    // recreated with the (now HDR) preferred canvas format.
+    this.renderer.setSize(Math.max(1, w - 1), Math.max(1, h - 1), false);
+    this.renderer.setSize(w, h, false);
   }
 
   setPanorama(texture) {

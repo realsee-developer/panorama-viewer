@@ -126,9 +126,12 @@ async function loadUltraHDR(buffer, renderer) {
   try {
     return await loadUltraHDRBuiltin(buffer);
   } catch (builtinErr) {
-    console.warn(
-      '[loader] UltraHDRLoader scanner failed, using robust MPF parser:',
-      builtinErr.message
+    // The built-in UltraHDRLoader fails on some valid real-world files
+    // (e.g. ICC-APP2-before-MPF layout). This is an expected, handled case —
+    // we transparently fall back to our own robust parser.
+    console.info(
+      '[loader] built-in UltraHDRLoader could not parse this file ' +
+        `(${builtinErr.message}); using robust MPF parser.`
     );
     return await loadUltraHDRRobust(buffer);
   }
