@@ -290,7 +290,8 @@ function renderHDRBadge(hdrResult) {
 
   // Row 3 — actual canvas output format.
   if (status.canvas && status.canvas.ok) {
-    statCanvas.textContent = `HDR · ${status.canvas.format} / ${status.canvas.colorSpace}`;
+    const cs = status.canvas.colorSpace === 'display-p3' ? 'P3' : status.canvas.colorSpace;
+    statCanvas.textContent = `HDR ${status.canvas.format} · ${cs}`;
     statCanvas.className = 'hdrBadge__val ok';
   } else {
     statCanvas.textContent = 'SDR (8-bit)';

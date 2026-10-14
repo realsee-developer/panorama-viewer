@@ -117,40 +117,48 @@ export class Minimap {
   }
 
   /**
-   * Trace the camera frustum boundary and return it as 1–3 closed loops in map
-   * pixel space (duplicated with ±W offsets so horizontal wrap renders).
+   * Trace the camera frustum boundary into closed loops in map pixel space.
+   *
+   * The hard case is when a pole (zenith/nadir) falls inside the view: the
+   * visible region then wraps all 360° of longitude as a "cap" touching the
+   * top/bottom map edge, which a simple perimeter polygon can't represent. We
+   * detect that and build the cap explicitly from the per-longitude latitude
+   * extent of the sampled frustum boundary.
    */
   _frustumLoops(W, H) {
     const fovY = (this.view.fov * Math.PI) / 180;
     const tanY = Math.tan(fovY / 2);
     const tanX = tanY * this.aspect;
 
-    // Sample the screen-rectangle perimeter (NDC in [-1,1]) and project each
-    // to a world ray -> lon/lat -> map pixel.
-    const N = 24; // samples per edge
-    const pts = [];
+    // Dense sample of the whole screen-rectangle perimeter.
+    const N = 48;
+    const samples = [];
     const edge = (ax, ay, bx, by) => {
       for (let i = 0; i < N; i++) {
         const t = i / N;
         const nx = ax + (bx - ax) * t;
         const ny = ay + (by - ay) * t;
-        const dir = this._viewDir(nx * tanX, ny * tanY);
-        pts.push(this._dirToLonLat(dir));
+        samples.push(this._dirToLonLat(this._viewDir(nx * tanX, ny * tanY)));
       }
     };
-    // CCW around the screen rectangle.
     edge(-1, -1, 1, -1);
     edge(1, -1, 1, 1);
     edge(1, 1, -1, 1);
     edge(-1, 1, -1, -1);
 
-    // Convert lon/lat to continuous map x (unwrapped) + y.
+    const zenithIn = this._poleInView(1, tanX, tanY); // (0,+1,0)
+    const nadirIn = this._poleInView(-1, tanX, tanY); // (0,-1,0)
+
+    if (zenithIn || nadirIn) {
+      return this._capLoops(samples, W, H, zenithIn);
+    }
+
+    // Normal case: continuous perimeter polygon, longitude unwrapped.
     const base = [];
     let prevX = null;
-    for (const { lon, lat } of pts) {
+    for (const { lon, lat } of samples) {
       let x = ((lon + 180) / 360) * W;
       const y = ((90 - lat) / 180) * H;
-      // Unwrap longitude so the polyline doesn't jump across the seam.
       if (prevX !== null) {
         while (x - prevX > W / 2) x -= W;
         while (x - prevX < -W / 2) x += W;
@@ -158,12 +166,85 @@ export class Minimap {
       base.push({ x, y });
       prevX = x;
     }
+    return [-W, 0, W].map((off) => base.map((p) => ({ x: p.x + off, y: p.y })));
+  }
 
-    // Replicate at -W, 0, +W to cover horizontal wrap; the clip/stroke only
-    // shows the parts overlapping [0, W].
-    return [-W, 0, W].map((off) =>
-      base.map((p) => ({ x: p.x + off, y: p.y }))
-    );
+  /**
+   * Build a pole-cap polygon: for each longitude column, find how far the
+   * frustum boundary reaches away from the pole, then close the shape along
+   * the pole edge across the full map width.
+   */
+  _capLoops(samples, W, H, isZenith) {
+    const BINS = 180;
+    // For a zenith cap we track the *max* y (lowest point) the boundary
+    // reaches per column; the bright region is from the top edge down to it.
+    // For a nadir cap it's the *min* y, bright region from bottom edge up.
+    const bound = new Array(BINS).fill(isZenith ? 0 : H);
+    for (const { lon, lat } of samples) {
+      const col = Math.min(
+        BINS - 1,
+        Math.max(0, Math.floor(((lon + 180) / 360) * BINS))
+      );
+      const y = ((90 - lat) / 180) * H;
+      if (isZenith) bound[col] = Math.max(bound[col], y);
+      else bound[col] = Math.min(bound[col], y);
+    }
+    // Fill gaps (columns with no sample) by nearest-neighbour so the curve is
+    // continuous all the way around.
+    let last = isZenith ? 0 : H;
+    for (let i = 0; i < BINS; i++) {
+      if (
+        (isZenith && bound[i] === 0) ||
+        (!isZenith && bound[i] === H)
+      ) {
+        bound[i] = last;
+      } else {
+        last = bound[i];
+      }
+    }
+
+    const loop = [];
+    for (let i = 0; i < BINS; i++) {
+      loop.push({ x: (i / BINS) * W, y: bound[i] });
+    }
+    loop.push({ x: W, y: bound[BINS - 1] });
+    if (isZenith) {
+      // Close along the top edge.
+      loop.push({ x: W, y: 0 });
+      loop.push({ x: 0, y: 0 });
+    } else {
+      // Close along the bottom edge.
+      loop.push({ x: W, y: H });
+      loop.push({ x: 0, y: H });
+    }
+    return [loop];
+  }
+
+  /** Is the pole (dirY = +1 zenith / -1 nadir) inside the view frustum? */
+  _poleInView(dirY, tanX, tanY) {
+    // Transform the pole world direction into camera space and test the tan
+    // bounds. Reuse the same basis as _viewDir.
+    const lon = (this.view.lon * Math.PI) / 180;
+    const lat = (this.view.lat * Math.PI) / 180;
+    const f = {
+      x: Math.cos(lat) * Math.sin(lon),
+      y: Math.sin(lat),
+      z: Math.cos(lat) * Math.cos(lon),
+    };
+    let r = { x: f.z, y: 0, z: -f.x };
+    const rl = Math.hypot(r.x, r.y, r.z) || 1;
+    r = { x: r.x / rl, y: r.y / rl, z: r.z / rl };
+    const u = {
+      x: f.y * r.z - f.z * r.y,
+      y: f.z * r.x - f.x * r.z,
+      z: f.x * r.y - f.y * r.x,
+    };
+    const p = { x: 0, y: dirY, z: 0 };
+    const cz = p.x * f.x + p.y * f.y + p.z * f.z; // forward
+    if (cz <= 1e-4) return false; // behind camera
+    const cx = p.x * r.x + p.y * r.y + p.z * r.z;
+    const cy = p.x * u.x + p.y * u.y + p.z * u.z;
+    return Math.abs(cx / cz) <= tanX && Math.abs(cy / cz) <= tanY;
   }
 
   /** World ray direction for a screen offset (xTan, yTan) from view center. */

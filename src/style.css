@@ -197,6 +197,7 @@ body {
   row-gap: 8px;
   column-gap: 12px;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .panel__meta dt {
@@ -307,6 +308,7 @@ body {
   left: var(--pad);
   bottom: var(--pad);
   z-index: 30;
+  width: 288px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
@@ -314,7 +316,7 @@ body {
   backdrop-filter: blur(var(--panel-blur));
   -webkit-backdrop-filter: blur(var(--panel-blur));
   font-size: 11px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.06em;
 }
 
 .hdrBadge__row {
@@ -328,16 +330,17 @@ body {
 }
 
 .hdrBadge__key {
-  padding: 7px 12px;
+  padding: 7px 10px;
   color: var(--muted);
   border-right: 1px solid var(--line);
   white-space: nowrap;
 }
 
 .hdrBadge__val {
-  padding: 7px 12px;
+  padding: 7px 10px;
   font-weight: 600;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .hdrBadge__val.ok {

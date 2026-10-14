@@ -197,7 +197,7 @@ async function loadUltraHDRRobust(buffer) {
       gainMeta,
     },
     texture: null,
-    format: 'Ultra HDR (JPEG + gain map)',
+    format: 'Ultra HDR (JPEG + gainmap)',
     width,
     height,
     ratio: width / height,
