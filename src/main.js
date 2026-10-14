@@ -180,7 +180,8 @@ async function handleFile(file) {
     metaFormat.textContent = result.format;
     metaRes.textContent = `${result.width} × ${result.height}`;
     metaRatio.textContent =
-      result.ratio.toFixed(3) + ' : 1' + (result.letterboxed ? ' (letterboxed)' : '');
+      formatAspect(result.width, result.height) +
+      (result.letterboxed ? ' · letterboxed' : '');
     setHdrMeta(result.isHDR, hdrResult);
 
     // Minimap.
@@ -259,6 +260,22 @@ function setupHDRControl(isHDR) {
 
 function updateBoostLabel(linear) {
   hdrBoostVal.textContent = `${linear.toFixed(2)}×`;
+}
+
+/**
+ * Format an aspect ratio for display. Prefers a clean reduced integer ratio
+ * (e.g. 8192×4096 → "2:1", 1920×1080 → "16:9"); falls back to a decimal
+ * "N.NN:1" when the reduced ratio would be unwieldy.
+ */
+function formatAspect(w, h) {
+  const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+  const g = gcd(w, h) || 1;
+  const rw = w / g;
+  const rh = h / g;
+  const decimal = `${(w / h).toFixed(2)}:1`;
+  // Use the reduced ratio only when both terms are small and tidy.
+  if (rw <= 64 && rh <= 64) return `${rw}:${rh}`;
+  return decimal;
 }
 
 // ---------- HDR status rendering ----------
