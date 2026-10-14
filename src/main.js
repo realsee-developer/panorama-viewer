@@ -24,7 +24,9 @@ const hdrBoostVal = $('hdrBoostVal');
 const hdrBoostMax = $('hdrBoostMax');
 const minimapCanvas = $('minimap');
 const hdrBadge = $('hdrBadge');
-const hdrBadgeVal = $('hdrBadgeVal');
+const statDisplay = $('statDisplay');
+const statImage = $('statImage');
+const statCanvas = $('statCanvas');
 const mapToggle = $('mapToggle');
 const toast = $('toast');
 const loader = $('loader');
@@ -32,6 +34,13 @@ const loader = $('loader');
 let viewer;
 let minimap;
 let displayHDR;
+
+// Persistent status so the bottom-left badge shows the same rows before and
+// after loading (display capability / image range / canvas output format).
+const status = {
+  imageIsHDR: null, // null = no image yet
+  canvas: null, // hdrResult when HDR output active, else null
+};
 
 // ---------- bootstrap ----------
 init().catch((err) => {
@@ -183,6 +192,7 @@ async function handleFile(file) {
     // Reveal viewer.
     dropzone.classList.add('hidden-fade');
     mapToggle.hidden = false;
+    status.imageIsHDR = result.isHDR;
     renderHDRBadge(hdrResult);
 
     if (result.letterboxed) {
@@ -255,17 +265,36 @@ function updateBoostLabel(linear) {
 
 // ---------- HDR status rendering ----------
 function renderHDRBadge(hdrResult) {
+  if (hdrResult !== undefined) status.canvas = hdrResult;
+
+  // Row 1 — display capability (always known from matchMedia).
   if (displayHDR.supported) {
-    hdrBadgeVal.textContent = 'Supported (dynamic-range: high)';
-    hdrBadgeVal.className = 'hdrBadge__val ok';
+    statDisplay.textContent = 'Supported';
+    statDisplay.className = 'hdrBadge__val ok';
   } else {
-    hdrBadgeVal.textContent = 'Not supported / SDR display';
-    hdrBadgeVal.className = 'hdrBadge__val no';
+    statDisplay.textContent = 'Not supported';
+    statDisplay.className = 'hdrBadge__val no';
   }
-  // If we actually activated HDR output on the canvas, note it.
-  if (hdrResult && hdrResult.ok) {
-    hdrBadgeVal.textContent = `HDR output · ${hdrResult.colorSpace} / ${hdrResult.toneMapping}`;
-    hdrBadgeVal.className = 'hdrBadge__val ok';
+
+  // Row 2 — the loaded image's dynamic range.
+  if (status.imageIsHDR === null) {
+    statImage.textContent = 'No image';
+    statImage.className = 'hdrBadge__val no';
+  } else if (status.imageIsHDR) {
+    statImage.textContent = 'Ultra HDR';
+    statImage.className = 'hdrBadge__val ok';
+  } else {
+    statImage.textContent = 'SDR';
+    statImage.className = 'hdrBadge__val no';
+  }
+
+  // Row 3 — actual canvas output format.
+  if (status.canvas && status.canvas.ok) {
+    statCanvas.textContent = `HDR · ${status.canvas.format} / ${status.canvas.colorSpace}`;
+    statCanvas.className = 'hdrBadge__val ok';
+  } else {
+    statCanvas.textContent = 'SDR (8-bit)';
+    statCanvas.className = 'hdrBadge__val no';
   }
 }
 

@@ -308,24 +308,36 @@ body {
   bottom: var(--pad);
   z-index: 30;
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
   border: 1px solid var(--line);
   background: var(--panel-bg);
   backdrop-filter: blur(var(--panel-blur));
   -webkit-backdrop-filter: blur(var(--panel-blur));
   font-size: 11px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.1em;
+}
+
+.hdrBadge__row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: stretch;
+}
+
+.hdrBadge__row + .hdrBadge__row {
+  border-top: 1px solid var(--line);
 }
 
 .hdrBadge__key {
-  padding: 8px 12px;
+  padding: 7px 12px;
   color: var(--muted);
   border-right: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 .hdrBadge__val {
-  padding: 8px 12px;
+  padding: 7px 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .hdrBadge__val.ok {
