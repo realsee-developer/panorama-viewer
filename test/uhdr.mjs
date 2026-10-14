@@ -54,6 +54,13 @@ const FILE = resolve(__dirname, '../public/equirect.uhdr.jpg');
     el.textContent.trim()
   );
 
+  // The HDR boost control should be visible with a sensible range.
+  out.hdrControl = await page.evaluate(() => ({
+    visible: !document.getElementById('hdrControl').hidden,
+    max: document.getElementById('hdrBoost').max,
+    value: document.getElementById('hdrBoost').value,
+  }));
+
   // Confirm the canvas actually drew something (screenshot brightness).
   const view = await page.$('#view');
   const buf = await view.screenshot({ encoding: 'binary' });

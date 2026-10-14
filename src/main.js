@@ -18,6 +18,10 @@ const metaFormat = $('metaFormat');
 const metaRes = $('metaRes');
 const metaRatio = $('metaRatio');
 const metaHdr = $('metaHdr');
+const hdrControl = $('hdrControl');
+const hdrBoost = $('hdrBoost');
+const hdrBoostVal = $('hdrBoostVal');
+const hdrBoostMax = $('hdrBoostMax');
 const minimapCanvas = $('minimap');
 const hdrBadge = $('hdrBadge');
 const hdrBadgeVal = $('hdrBadgeVal');
@@ -150,8 +154,8 @@ async function handleFile(file) {
   try {
     const result = await loadPanorama(file, viewer.renderer);
 
-    // Apply to the sphere.
-    viewer.setPanorama(result.texture);
+    // Apply the panorama (SDR texture or HDR gain-map descriptor).
+    viewer.setPanorama(result.isHDR ? result.hdr : result.texture);
 
     // Try to enable true HDR output when the content is HDR *and* the display
     // reports HDR capability. We still attempt configure on HDR content even
@@ -160,6 +164,9 @@ async function handleFile(file) {
     if (result.isHDR && !new URLSearchParams(location.search).has('nohdr')) {
       hdrResult = viewer.enableHDR();
     }
+
+    // HDR boost control: show for Ultra HDR, hide otherwise.
+    setupHDRControl(result.isHDR);
 
     // Fill meta panel.
     panel.hidden = false;
@@ -191,6 +198,49 @@ async function handleFile(file) {
   } finally {
     showLoader(false);
   }
+}
+
+// ---------- HDR boost control ----------
+let hdrBoostBound = false;
+
+function setupHDRControl(isHDR) {
+  if (!isHDR) {
+    hdrControl.hidden = true;
+    return;
+  }
+  const info = viewer.getHDRInfo();
+  if (!info) {
+    hdrControl.hidden = true;
+    return;
+  }
+
+  // Slider range: 1× (pure SDR, no boost) up to the content's full HDR
+  // capacity. Default to the full capacity (full HDR intent).
+  const maxLinear = Math.max(1.01, info.hdrCapacityMaxLinear);
+  hdrBoost.min = '1';
+  hdrBoost.max = String(maxLinear.toFixed(2));
+  hdrBoost.step = String(Math.max(0.01, (maxLinear - 1) / 200).toFixed(3));
+  hdrBoost.value = String(maxLinear.toFixed(2));
+  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (完整)`;
+  updateBoostLabel(maxLinear);
+
+  // Apply the initial (full) boost.
+  viewer.setMaxDisplayBoost(maxLinear);
+
+  if (!hdrBoostBound) {
+    hdrBoost.addEventListener('input', () => {
+      const v = parseFloat(hdrBoost.value);
+      viewer.setMaxDisplayBoost(v);
+      updateBoostLabel(v);
+    });
+    hdrBoostBound = true;
+  }
+
+  hdrControl.hidden = false;
+}
+
+function updateBoostLabel(linear) {
+  hdrBoostVal.textContent = `${linear.toFixed(2)}×`;
 }
 
 // ---------- HDR status rendering ----------

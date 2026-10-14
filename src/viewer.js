@@ -7,7 +7,20 @@
  */
 
 import { PerspectiveCamera, Scene, MathUtils } from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import {
+  WebGPURenderer,
+  texture as textureNode,
+  uniform,
+  equirectUV,
+  normalWorld,
+  vec3,
+  vec4,
+  float,
+  pow,
+  mix,
+  clamp,
+  Fn,
+} from 'three/webgpu';
 import { configureContextHDR } from './hdr.js';
 
 const MIN_FOV = 25;
@@ -139,16 +152,120 @@ export class PanoramaViewer {
     this.renderer.setSize(w, h, false);
   }
 
-  setPanorama(texture) {
-    // Dispose any previously loaded panorama.
-    if (this._panoTexture && this._panoTexture !== texture) {
-      this._panoTexture.dispose();
+  /**
+   * Set the panorama. Accepts either:
+   *   - an SDR `THREE.Texture` (equirectangular), or
+   *   - an HDR descriptor `{ sdrTexture, gainTexture, gainMeta }` for
+   *     Ultra HDR, which is composited on the GPU so maxDisplayBoost can be
+   *     adjusted live.
+   */
+  setPanorama(input) {
+    this._disposePano();
+
+    if (input && input.sdrTexture) {
+      this._setHDRPanorama(input);
+    } else {
+      this._setSDRPanorama(input);
     }
-    this._panoTexture = texture;
-    this.scene.background = texture;
-    // backgroundIntensity scales the environment; keep 1 so HDR values pass
-    // through unchanged for the extended tone mapping on the HDR canvas.
     this.scene.backgroundIntensity = 1.0;
+  }
+
+  _setSDRPanorama(texture) {
+    this.scene.backgroundNode = null;
+    this.scene.background = texture;
+    this._panoTexture = texture;
+    this._hdrPano = null;
+  }
+
+  /**
+   * Build a TSL background node that recovers HDR from the SDR base image and
+   * the gain map per the Android / ISO 21496-1 formula, driven by a live
+   * `maxDisplayBoost` uniform (log2 units):
+   *
+   *   logRecovery = pow(gain, 1/gamma)
+   *   logBoost    = mix(gainMapMin, gainMapMax, logRecovery)
+   *   weight      = clamp((log2DisplayBoost - hdrCapMin)/(hdrCapMax - hdrCapMin), 0, 1)
+   *   hdr         = (sdrLinear + offsetSDR) * exp2(logBoost*weight) - offsetHDR
+   */
+  _setHDRPanorama({ sdrTexture, gainTexture, gainMeta }) {
+    const m = gainMeta;
+
+    // Live-adjustable: target display boost in log2 units. Default = content's
+    // full HDR capacity (full intent). Range is applied by the UI.
+    this._boostUniform = uniform(m.hdrCapacityMax);
+    this._gainMeta = m;
+
+    const gainMapMin = float(m.gainMapMin);
+    const gainMapMax = float(m.gainMapMax);
+    const gammaInv = float(1.0 / (m.gamma || 1.0));
+    const offsetSDR = float(m.offsetSDR);
+    const offsetHDR = float(m.offsetHDR);
+    const hdrCapMin = float(m.hdrCapacityMin);
+    const hdrCapMax = float(m.hdrCapacityMax);
+
+    const node = Fn(() => {
+      const uv = equirectUV(normalWorld);
+      // Sample both textures at the equirectangular UV. In TSL, texture(tex, uv)
+      // performs the sample; the SDR texture is tagged sRGB so three returns it
+      // already linearized.
+      const sdrLinear = textureNode(sdrTexture, uv).rgb;
+      const gain = textureNode(gainTexture, uv).rgb;
+
+      const logRecovery = pow(gain, gammaInv);
+      const logBoost = mix(gainMapMin, gainMapMax, logRecovery);
+
+      const denom = hdrCapMax.sub(hdrCapMin).max(float(1e-6));
+      const weight = clamp(
+        this._boostUniform.sub(hdrCapMin).div(denom),
+        float(0.0),
+        float(1.0)
+      );
+
+      // exp2(x) == pow(2, x)
+      const boost = pow(float(2.0), logBoost.mul(weight));
+      const hdr = sdrLinear.add(offsetSDR).mul(boost).sub(offsetHDR).max(vec3(0));
+
+      return vec4(hdr, float(1.0));
+    })();
+
+    this.scene.background = null;
+    this.scene.backgroundNode = node;
+
+    this._hdrPano = { sdrTexture, gainTexture, gainMeta: m };
+    this._panoTexture = null;
+  }
+
+  /** Live-set the HDR display boost (as a linear multiple of SDR white). */
+  setMaxDisplayBoost(linearBoost) {
+    if (!this._boostUniform) return;
+    const log2 = Math.log2(Math.max(1, linearBoost));
+    this._boostUniform.value = log2;
+  }
+
+  /** HDR capability info for the currently loaded panorama (or null). */
+  getHDRInfo() {
+    if (!this._gainMeta) return null;
+    return {
+      hdrCapacityMaxLinear: Math.pow(2, this._gainMeta.hdrCapacityMax),
+      hdrCapacityMinLinear: Math.pow(2, this._gainMeta.hdrCapacityMin),
+      gainMeta: this._gainMeta,
+    };
+  }
+
+  _disposePano() {
+    if (this._panoTexture) {
+      this._panoTexture.dispose();
+      this._panoTexture = null;
+    }
+    if (this._hdrPano) {
+      this._hdrPano.sdrTexture?.dispose();
+      this._hdrPano.gainTexture?.dispose();
+      this._hdrPano = null;
+    }
+    this._boostUniform = null;
+    this._gainMeta = null;
+    this.scene.backgroundNode = null;
+    this.scene.background = null;
   }
 
   /* ---------- camera orientation ---------- */

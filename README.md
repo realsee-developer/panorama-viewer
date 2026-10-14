@@ -14,11 +14,12 @@
 ## 技术要点
 
 - `WebGPURenderer`（`three/webgpu`）以**等距圆柱背景**（`scene.background` + equirectangular mapping）渲染全景，相机位于原点，按相机光线方向逐像素绘制。相比把大尺寸半浮点纹理贴到球面材质，背景路径对 HDR 浮点纹理更稳定。
-- Ultra HDR 解码优先使用 three.js 内置的 `UltraHDRLoader`。但其 JPEG 段扫描器对部分真实文件（例如含 ICC APP2 段、由 `@realsee/hdr-toolbox` 生成的文件）会误读 MPF 偏移而抛 `Invalid typed array length`。因此本项目实现了一个**健壮的 Ultra HDR 解析回退**：
-  - 正确遍历 JPEG 段，读取 **MPF（APP2 "MPF\0"）** 多图目录，定位 primary 与 gain-map 两张子图；
-  - 从 **gain-map 子图自身的 APP1 XMP** 中读取增益图描述元数据（`hdrgm:GainMapMax`、`Gamma`、`HDRCapacityMax` 等）——这些关键元数据不在外层文件里；
-  - 复用 three.js `UltraHDRLoader._applyGainmapToSDR` 完成增益图合成，输出半浮点 HDR `DataTexture`。
-- HDR 画布：three.js 默认把 WebGPU 画布配置为 8-bit SDR 预览格式，因此我们在 `renderer.init()` 之后取出同一个 `GPUCanvasContext`，用 `rgba16float` + `colorSpace: 'display-p3'` + `toneMapping: { mode: 'extended' }` 重新 `configure()`，使超过 SDR 白点（> 1.0）的像素映射到显示器的 HDR headroom。
+- Ultra HDR 解码**不使用** three.js 的 `UltraHDRLoader`，原因有二：
+  - 其 JPEG 段扫描器对部分真实文件（含 ICC APP2 段、`@realsee/hdr-toolbox` 生成）会误读 MPF 偏移而抛 `Invalid typed array length`；
+  - 更关键的是它把 `maxDisplayBoost` **写死**为 `sqrt(1.8 ^ HDRCapacityMax)`，约等于内容 HDR 能力的一半，导致增益图被严重欠应用、画面灰暗发白。
+- 本项目自行实现 Ultra HDR 解码：正确遍历 JPEG 段读取 **MPF（APP2 "MPF\0"）** 定位 primary 与 gain-map 两张子图，从 **gain-map 子图自身的 APP1 XMP** 读取增益图元数据（`GainMapMax`、`Gamma`、`HDRCapacityMax` 等），然后把 **增益图合成放到 GPU**（TSL `scene.backgroundNode`）：按 Android / ISO 21496-1 公式 `hdr = (sdr + offsetSDR) * 2^(logBoost·weight) - offsetHDR` 逐像素恢复 HDR。
+- **maxDisplayBoost 实时可调**：由于合成在 GPU 上进行，`maxDisplayBoost` 是一个 uniform，左上角面板提供滑块（仅 Ultra HDR 图显示），范围 `1×（纯 SDR）~ 2^HDRCapacityMax（完整 HDR 强度）`，拖动即时生效、无需重新解码。
+- HDR 画布：three.js 默认把 WebGPU 画布配置为 8-bit SDR 预览格式，因此我们在 `renderer.init()` 之后取出同一个 `GPUCanvasContext`，用 `rgba16float` + `colorSpace: 'display-p3'` + `toneMapping: { mode: 'extended' }` 重新 `configure()`，并同步覆盖 `getPreferredCanvasFormat` 让 three 内部缓冲格式匹配，使超过 SDR 白点（> 1.0）的像素映射到显示器的 HDR headroom。
 
 ## 开发
 

@@ -15,18 +15,14 @@
 
 import {
   ClampToEdgeWrapping,
-  DataTexture,
   EquirectangularReflectionMapping,
-  HalfFloatType,
   LinearFilter,
   LinearMipmapLinearFilter,
   LinearSRGBColorSpace,
-  RGBAFormat,
   RepeatWrapping,
   SRGBColorSpace,
   Texture,
 } from 'three';
-import { UltraHDRLoader } from 'three/examples/jsm/loaders/UltraHDRLoader.js';
 
 const RATIO = 2; // target width : height
 
@@ -110,155 +106,97 @@ export async function loadPanorama(file, renderer) {
 
 /* ---------- Ultra HDR path ----------
  *
- * three.js's UltraHDRLoader does the gain-map math correctly in
- * `_applyGainmapToSDR`, but its JPEG section scanner mis-parses real-world
- * files that carry an ICC-profile APP2 before the MPF APP2 (e.g. produced by
- * @realsee/hdr-toolbox), reading a bogus MPF offset -> "Invalid typed array
- * length". @monogrid/gainmap-js is not an option here because its decoder
- * relies on WebGLRenderer.readRenderTargetPixels, which WebGPURenderer lacks.
+ * We decode Ultra HDR (gain-map JPEG) ourselves rather than via three's
+ * UltraHDRLoader, for two reasons:
  *
- * So: try the built-in loader first; if it throws, parse the JPEG ourselves
- * (proper APP1/APP2 + MPF handling) to extract the primary + gain-map images
- * and both XMP packets, then reuse the loader's own `_applyGainmapToSDR` to
- * produce the half-float HDR DataTexture.
+ *  1. UltraHDRLoader's JPEG section scanner mis-parses real-world files that
+ *     carry an ICC-profile APP2 before the MPF APP2 (e.g. @realsee/hdr-toolbox
+ *     output), reading a bogus MPF offset -> "Invalid typed array length".
+ *
+ *  2. More importantly, UltraHDRLoader._applyGainmapToSDR hardcodes the target
+ *     display boost to sqrt(1.8 ^ hdrCapacityMax), pinning it to about half the
+ *     content's HDR capacity. That under-applies the gain map and yields a
+ *     washed-out, low-contrast result. We instead implement the Android /
+ *     ISO 21496-1 recovery with a configurable display boost (default: the
+ *     content's full HDR capacity) so highlights reach their intended level.
+ *
+ * (@monogrid/gainmap-js is also unusable here: its decoder relies on
+ *  WebGLRenderer.readRenderTargetPixels, which WebGPURenderer does not have.)
  */
-async function loadUltraHDR(buffer, renderer) {
-  try {
-    return await loadUltraHDRBuiltin(buffer);
-  } catch (builtinErr) {
-    // The built-in UltraHDRLoader fails on some valid real-world files
-    // (e.g. ICC-APP2-before-MPF layout). This is an expected, handled case —
-    // we transparently fall back to our own robust parser.
-    console.info(
-      '[loader] built-in UltraHDRLoader could not parse this file ' +
-        `(${builtinErr.message}); using robust MPF parser.`
-    );
-    return await loadUltraHDRRobust(buffer);
-  }
-}
-
-async function loadUltraHDRBuiltin(buffer) {
-  const loader = new UltraHDRLoader();
-  // HalfFloat keeps HDR headroom; renderer must support it (WebGPU does).
-
-  const { texture, texData } = await new Promise((resolve, reject) => {
-    try {
-      loader.parse(buffer, (data) => {
-        const tex = new DataTexture(data.data, data.width, data.height);
-        tex.type = loader.type;
-        tex.format = RGBAFormat;
-        tex.needsUpdate = true;
-        resolve({ texture: tex, texData: data });
-      });
-    } catch (e) {
-      reject(e);
-    }
-  });
-
-  return finishHDR(texture, texData, buffer, 'three/UltraHDRLoader');
+async function loadUltraHDR(buffer /*, renderer */) {
+  return loadUltraHDRRobust(buffer);
 }
 
 /**
  * Robust path: parse JPEG segments correctly, extract primary + gain-map
- * images and XMP, then drive three's `_applyGainmapToSDR` directly.
+ * images and XMP, then apply the gain map ourselves.
+ *
+ * We deliberately do NOT use three's `_applyGainmapToSDR`: it hardcodes
+ *   maxDisplayBoost = sqrt(1.8 ^ hdrCapacityMax)
+ * which pins the display boost to roughly half the content's HDR capacity, so
+ * the recovered HDR is heavily under-boosted (washed out, low contrast). We
+ * instead follow the Android / ISO 21496-1 recovery formula with a
+ * configurable target display boost that defaults to the content's *full* HDR
+ * capacity (2 ^ hdrCapacityMax), i.e. render the full HDR intent.
  */
 async function loadUltraHDRRobust(buffer) {
   const parsed = parseUltraHDRJPEG(buffer);
   if (!parsed) {
     throw new Error(
-      'THREE.UltraHDRLoader: 无法从该 Ultra HDR 文件中解析出 gain map。'
+      'Ultra HDR: 无法从该文件中解析出 gain map（MPF/XMP 缺失）。'
     );
   }
 
-  const loader = new UltraHDRLoader();
+  const gainMeta = parseGainMapMetadata(parsed.xmpPackets);
 
-  // Reuse the loader's XMP parser for metadata (populated from the gain-map
-  // descriptor XMP, which carries hdrgm:Version etc.).
-  const xmpMetadata = {
-    version: null,
-    baseRenditionIsHDR: null,
-    gainMapMin: null,
-    gainMapMax: null,
-    gamma: null,
-    offsetSDR: null,
-    offsetHDR: null,
-    hdrCapacityMin: null,
-    hdrCapacityMax: null,
-  };
-  for (const xmp of parsed.xmpPackets) {
-    loader._parseXMPMetadata(xmp, xmpMetadata);
-  }
-  if (!xmpMetadata.version) {
-    // Some files only expose version in the primary container; default to 1.0
-    xmpMetadata.version = '1.0';
-  }
+  // Decode the SDR base image and the gain map as ImageBitmaps and upload them
+  // as plain textures. The HDR recovery is done on the GPU in a background
+  // node (see viewer.js), so the user can adjust maxDisplayBoost live without
+  // re-decoding. (The gain map is often lower-resolution; the GPU samples it
+  // with bilinear filtering, matching the spec's "scale to SDR resolution".)
+  const [sdrBitmap, gainBitmap] = await Promise.all([
+    createImageBitmap(new Blob([parsed.primaryImage])),
+    createImageBitmap(new Blob([parsed.gainmapImage])),
+  ]);
 
-  const texData = await new Promise((resolve, reject) => {
-    loader._applyGainmapToSDR(
-      xmpMetadata,
-      parsed.primaryImage,
-      parsed.gainmapImage,
-      (hdrBuffer, width, height) =>
-        resolve({
-          data: hdrBuffer,
-          width,
-          height,
-          format: RGBAFormat,
-          type: loader.type,
-        }),
-      (error) => reject(new Error(error))
-    );
-  });
-
-  const texture = new DataTexture(
-    texData.data,
-    texData.width,
-    texData.height,
-    RGBAFormat,
-    loader.type
-  );
-  texture.colorSpace = LinearSRGBColorSpace;
-  texture.needsUpdate = true;
-
-  return finishHDR(texture, texData, buffer, 'robust-mpf-parser');
-}
-
-/** Common post-processing for both HDR decode paths. */
-async function finishHDR(texture, texData, buffer, decoder) {
-  const width = texData.width;
-  const height = texData.height;
+  const width = sdrBitmap.width;
+  const height = sdrBitmap.height;
   validateRatio(width, height);
 
-  // Configure for equirectangular background use. HDR data is linear light,
-  // so use LinearSRGBColorSpace. Avoid mipmaps on the very large half-float
-  // texture (they can fail to generate for float textures in WebGPU and are
-  // unnecessary for a full-screen background).
-  texture.mapping = EquirectangularReflectionMapping;
-  texture.colorSpace = LinearSRGBColorSpace;
-  texture.wrapS = RepeatWrapping;
-  texture.wrapT = ClampToEdgeWrapping;
-  texture.minFilter = LinearFilter;
-  texture.magFilter = LinearFilter;
-  texture.generateMipmaps = false;
-  // The gain-map decode writes rows top-to-bottom; three's equirectangular
-  // background samples with the opposite vertical convention, so flip Y to
-  // avoid an upside-down panorama. (The built-in UltraHDRLoader also sets
-  // flipY = true on its DataTexture.)
-  texture.flipY = true;
-  texture.needsUpdate = true;
+  const sdrTexture = new Texture(sdrBitmap);
+  sdrTexture.colorSpace = SRGBColorSpace;
+  sdrTexture.wrapS = RepeatWrapping;
+  sdrTexture.wrapT = ClampToEdgeWrapping;
+  sdrTexture.minFilter = LinearFilter;
+  sdrTexture.magFilter = LinearFilter;
+  sdrTexture.generateMipmaps = false;
+  sdrTexture.flipY = true;
+  sdrTexture.needsUpdate = true;
 
-  // Minimap preview: the primary (base) image inside an Ultra HDR JPEG is a
-  // valid SDR JPEG, so decode it directly (fast, correct colors). Fall back
-  // to tone-mapping the half-float data if that fails.
-  let previewBitmap;
-  try {
-    previewBitmap = await createImageBitmap(new Blob([buffer]));
-  } catch {
-    previewBitmap = await hdrDataToBitmap(texData);
-  }
+  const gainTexture = new Texture(gainBitmap);
+  // Gain map is stored non-color (it's a multiplier map), keep it linear-ish;
+  // we read raw channel values in the shader.
+  gainTexture.colorSpace = LinearSRGBColorSpace;
+  gainTexture.wrapS = RepeatWrapping;
+  gainTexture.wrapT = ClampToEdgeWrapping;
+  gainTexture.minFilter = LinearFilter;
+  gainTexture.magFilter = LinearFilter;
+  gainTexture.generateMipmaps = false;
+  gainTexture.flipY = true;
+  gainTexture.needsUpdate = true;
+
+  // Minimap preview: the SDR base image.
+  const previewBitmap = await createImageBitmap(new Blob([parsed.primaryImage]));
 
   return {
-    texture,
+    // HDR panoramas provide the ingredients for GPU compositing instead of a
+    // single baked texture.
+    hdr: {
+      sdrTexture,
+      gainTexture,
+      gainMeta,
+    },
+    texture: null,
     format: 'Ultra HDR (JPEG + gain map)',
     width,
     height,
@@ -266,7 +204,7 @@ async function finishHDR(texture, texData, buffer, decoder) {
     isHDR: true,
     letterboxed: width / height > RATIO + 1e-3,
     previewBitmap,
-    decoder,
+    decoder: 'robust-gainmap-gpu',
   };
 }
 
@@ -420,6 +358,44 @@ function parseMPF(data, tiffStart) {
   return images;
 }
 
+/* ---------- Gain-map metadata (Android / ISO 21496-1) ---------- */
+
+/** Read gain-map descriptor fields from the collected XMP packets. */
+function parseGainMapMetadata(xmpPackets) {
+  const get = (attr) => {
+    for (const xmp of xmpPackets) {
+      // Match hdrgm:Attr="..." (namespace prefix may vary but hdrgm is standard).
+      const m = xmp.match(
+        new RegExp(`hdrgm:${attr}\\s*=\\s*"([^"]*)"`, 'i')
+      );
+      if (m) return m[1];
+    }
+    return null;
+  };
+  const num = (attr, dflt) => {
+    const v = get(attr);
+    if (v == null) return dflt;
+    const f = parseFloat(v);
+    return Number.isFinite(f) ? f : dflt;
+  };
+  const bool = (attr) => {
+    const v = get(attr);
+    return v != null && /^true$/i.test(v);
+  };
+
+  // Defaults per the Android HDR gain-map spec.
+  return {
+    gainMapMin: num('GainMapMin', 0.0), // log2 space
+    gainMapMax: num('GainMapMax', 1.0), // log2 space
+    gamma: num('Gamma', 1.0),
+    offsetSDR: num('OffsetSDR', 1 / 64),
+    offsetHDR: num('OffsetHDR', 1 / 64),
+    hdrCapacityMin: num('HDRCapacityMin', 0.0), // log2 space
+    hdrCapacityMax: num('HDRCapacityMax', 1.0), // log2 space
+    baseRenditionIsHDR: bool('BaseRenditionIsHDR'),
+  };
+}
+
 /* ---------- SDR path (jpg/png/avif) ---------- */
 async function loadSDR(buffer, format) {
   const blob = new Blob([buffer]);
@@ -486,60 +462,6 @@ async function letterbox(bitmap) {
   const y = Math.round((targetH - bitmap.height) / 2);
   ctx.drawImage(bitmap, 0, y);
   return createImageBitmap(canvas);
-}
-
-/**
- * Convert the HDR half-float DataTexture payload into an SDR ImageBitmap for
- * the minimap. We clamp to [0,1] after a simple exposure so the thumbnail is
- * viewable even on SDR panels. Downscaled for performance.
- */
-async function hdrDataToBitmap(texData) {
-  const { width, height, data } = texData;
-  // Downscale target
-  const maxW = 1024;
-  const scale = width > maxW ? maxW / width : 1;
-  const dw = Math.max(1, Math.round(width * scale));
-  const dh = Math.max(1, Math.round(height * scale));
-
-  // Read half-float (Uint16) or float32.
-  const isHalf = data instanceof Uint16Array;
-  const src = data;
-
-  const out = new Uint8ClampedArray(dw * dh * 4);
-  for (let y = 0; y < dh; y++) {
-    const sy = Math.min(height - 1, Math.floor(y / scale));
-    for (let x = 0; x < dw; x++) {
-      const sx = Math.min(width - 1, Math.floor(x / scale));
-      const si = (sy * width + sx) * 4;
-      const di = (y * dw + x) * 4;
-      for (let c = 0; c < 3; c++) {
-        let v = isHalf ? fromHalf(src[si + c]) : src[si + c];
-        // Reinhard-ish tone map for preview + gamma to sRGB.
-        v = v / (1 + v);
-        v = Math.pow(Math.min(1, Math.max(0, v)), 1 / 2.2);
-        out[di + c] = v * 255;
-      }
-      out[di + 3] = 255;
-    }
-  }
-  const imgData = new ImageData(out, dw, dh);
-  return createImageBitmap(imgData);
-}
-
-/** Decode an IEEE 754 half-precision float stored in a Uint16. */
-function fromHalf(h) {
-  const s = (h & 0x8000) >> 15;
-  const e = (h & 0x7c00) >> 10;
-  const f = h & 0x03ff;
-  let val;
-  if (e === 0) {
-    val = (f / 1024) * Math.pow(2, -14);
-  } else if (e === 0x1f) {
-    val = f ? NaN : Infinity;
-  } else {
-    val = (1 + f / 1024) * Math.pow(2, e - 15);
-  }
-  return s ? -val : val;
 }
 
 function prettyFormat(fmt) {
