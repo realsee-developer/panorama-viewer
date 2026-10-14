@@ -13,8 +13,11 @@
 
 ## 技术要点
 
-- `WebGPURenderer`（`three/webgpu`）渲染反转球体，相机位于球心。
-- Ultra HDR 解码使用 three.js 内置的 `UltraHDRLoader`（`three/examples/jsm/loaders/UltraHDRLoader.js`），输出半浮点 HDR `DataTexture`。
+- `WebGPURenderer`（`three/webgpu`）以**等距圆柱背景**（`scene.background` + equirectangular mapping）渲染全景，相机位于原点，按相机光线方向逐像素绘制。相比把大尺寸半浮点纹理贴到球面材质，背景路径对 HDR 浮点纹理更稳定。
+- Ultra HDR 解码优先使用 three.js 内置的 `UltraHDRLoader`。但其 JPEG 段扫描器对部分真实文件（例如含 ICC APP2 段、由 `@realsee/hdr-toolbox` 生成的文件）会误读 MPF 偏移而抛 `Invalid typed array length`。因此本项目实现了一个**健壮的 Ultra HDR 解析回退**：
+  - 正确遍历 JPEG 段，读取 **MPF（APP2 "MPF\0"）** 多图目录，定位 primary 与 gain-map 两张子图；
+  - 从 **gain-map 子图自身的 APP1 XMP** 中读取增益图描述元数据（`hdrgm:GainMapMax`、`Gamma`、`HDRCapacityMax` 等）——这些关键元数据不在外层文件里；
+  - 复用 three.js `UltraHDRLoader._applyGainmapToSDR` 完成增益图合成，输出半浮点 HDR `DataTexture`。
 - HDR 画布：three.js 默认把 WebGPU 画布配置为 8-bit SDR 预览格式，因此我们在 `renderer.init()` 之后取出同一个 `GPUCanvasContext`，用 `rgba16float` + `colorSpace: 'display-p3'` + `toneMapping: { mode: 'extended' }` 重新 `configure()`，使超过 SDR 白点（> 1.0）的像素映射到显示器的 HDR headroom。
 
 ## 开发

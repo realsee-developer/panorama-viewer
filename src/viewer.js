@@ -1,24 +1,18 @@
 /**
  * viewer.js — WebGPU equirectangular panorama renderer + camera controls.
  *
- * Rendering: a large sphere with the panorama mapped on its inside (BackSide).
- * Camera sits at the sphere center; dragging rotates the view (yaw/pitch),
- * wheel / pinch changes FOV (zoom).
+ * Rendering: the panorama is the scene background (equirectangular mapping),
+ * drawn per-pixel from the camera ray direction. The camera sits at the
+ * origin; dragging rotates the view (yaw/pitch), wheel / pinch changes FOV.
  */
 
-import {
-  Mesh,
-  PerspectiveCamera,
-  Scene,
-  SphereGeometry,
-  MathUtils,
-} from 'three';
-import { WebGPURenderer, MeshBasicNodeMaterial } from 'three/webgpu';
+import { PerspectiveCamera, Scene, MathUtils } from 'three';
+import { WebGPURenderer } from 'three/webgpu';
 import { configureContextHDR } from './hdr.js';
 
 const MIN_FOV = 25;
 const MAX_FOV = 100;
-const SPHERE_RADIUS = 500;
+const LOOK_RADIUS = 100; // arbitrary positive distance for the lookAt target
 
 export class PanoramaViewer {
   constructor(canvas) {
@@ -37,12 +31,15 @@ export class PanoramaViewer {
     this.lon = 0;
     this.lat = 0;
 
-    // Sphere mesh (geometry inverted so we see the inside).
-    const geometry = new SphereGeometry(SPHERE_RADIUS, 60, 40);
-    geometry.scale(-1, 1, 1); // flip to view from inside
-    this.material = new MeshBasicNodeMaterial({ color: 0x111111 });
-    this.mesh = new Mesh(geometry, this.material);
-    this.scene.add(this.mesh);
+    // The panorama is rendered as the scene background with equirectangular
+    // mapping. three.js's WebGPU renderer has a dedicated, HDR-correct
+    // equirectangular background path, which handles large half-float
+    // textures reliably (unlike mapping a huge float texture onto a sphere
+    // mesh material). FOV zoom still works because the background is drawn
+    // per-pixel from the camera ray direction.
+    this.scene.background = null;
+    this.scene.backgroundIntensity = 1.0;
+    this._panoTexture = null;
 
     this._pointers = new Map();
     this._dragging = false;
@@ -103,11 +100,15 @@ export class PanoramaViewer {
   }
 
   setPanorama(texture) {
-    // Apply texture to the inside-sphere material.
-    if (this.material.map) this.material.map.dispose();
-    this.material.map = texture;
-    this.material.color.set(0xffffff);
-    this.material.needsUpdate = true;
+    // Dispose any previously loaded panorama.
+    if (this._panoTexture && this._panoTexture !== texture) {
+      this._panoTexture.dispose();
+    }
+    this._panoTexture = texture;
+    this.scene.background = texture;
+    // backgroundIntensity scales the environment; keep 1 so HDR values pass
+    // through unchanged for the extended tone mapping on the HDR canvas.
+    this.scene.backgroundIntensity = 1.0;
   }
 
   /* ---------- camera orientation ---------- */
@@ -124,9 +125,9 @@ export class PanoramaViewer {
     const phi = MathUtils.degToRad(90 - this.lat);
     const theta = MathUtils.degToRad(this.lon);
     const target = {
-      x: SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta),
-      y: SPHERE_RADIUS * Math.cos(phi),
-      z: SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta),
+      x: LOOK_RADIUS * Math.sin(phi) * Math.cos(theta),
+      y: LOOK_RADIUS * Math.cos(phi),
+      z: LOOK_RADIUS * Math.sin(phi) * Math.sin(theta),
     };
     this.camera.lookAt(target.x, target.y, target.z);
   }

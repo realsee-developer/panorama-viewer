@@ -142,6 +142,23 @@ body {
   transform: translateY(1px);
 }
 
+.dropzone__actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn--ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--fg);
+}
+
+.btn--ghost:hover {
+  background: rgba(242, 242, 242, 0.06);
+  border-color: var(--fg);
+}
+
 /* ---------- Info / Minimap panel (top-left) ---------- */
 .panel {
   position: fixed;

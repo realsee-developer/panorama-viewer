@@ -74,6 +74,30 @@ function bindUI() {
     if (fileInput.files && fileInput.files[0]) handleFile(fileInput.files[0]);
   });
 
+  // Load the bundled demo panorama (Ultra HDR).
+  const demoBtn = document.getElementById('demoBtn');
+  if (demoBtn) {
+    demoBtn.addEventListener('click', async () => {
+      showLoader(true);
+      try {
+        // `import.meta.env.BASE_URL` resolves correctly under GitHub Pages
+        // project subpaths.
+        const base = import.meta.env.BASE_URL || '/';
+        const url = base.replace(/\/$/, '') + '/equirect.uhdr.jpg';
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('示例全景加载失败 (' + resp.status + ')');
+        const blob = await resp.blob();
+        const file = new File([blob], 'equirect.uhdr.jpg', {
+          type: 'image/jpeg',
+        });
+        await handleFile(file);
+      } catch (e) {
+        showToast(e.message || '示例加载失败', 6000);
+        showLoader(false);
+      }
+    });
+  }
+
   // Drag & drop (whole window)
   ['dragenter', 'dragover'].forEach((ev) =>
     window.addEventListener(ev, (e) => {
@@ -132,7 +156,7 @@ async function handleFile(file) {
     // reports HDR capability. We still attempt configure on HDR content even
     // if media query is false, because some browsers mis-report.
     let hdrResult = { ok: false };
-    if (result.isHDR) {
+    if (result.isHDR && !new URLSearchParams(location.search).has('nohdr')) {
       hdrResult = viewer.enableHDR();
     }
 

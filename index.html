@@ -27,7 +27,10 @@
             拖拽图片到此处 · 或点击选择<br />
             <span class="muted">AVIF · JPG · PNG · Ultra&nbsp;HDR JPG</span>
           </p>
-          <button id="pickBtn" class="btn">选择文件</button>
+          <div class="dropzone__actions">
+            <button id="pickBtn" class="btn">选择文件</button>
+            <button id="demoBtn" class="btn btn--ghost">加载示例全景</button>
+          </div>
           <input id="fileInput" type="file" accept="image/*,.jpg,.jpeg,.png,.avif" hidden />
         </div>
       </div>

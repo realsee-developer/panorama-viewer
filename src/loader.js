@@ -14,11 +14,15 @@
  */
 
 import {
+  ClampToEdgeWrapping,
   DataTexture,
   EquirectangularReflectionMapping,
+  HalfFloatType,
   LinearFilter,
   LinearMipmapLinearFilter,
+  LinearSRGBColorSpace,
   RGBAFormat,
+  RepeatWrapping,
   SRGBColorSpace,
   Texture,
 } from 'three';
@@ -104,19 +108,40 @@ export async function loadPanorama(file, renderer) {
   return loadSDR(buffer, format);
 }
 
-/* ---------- Ultra HDR path ---------- */
+/* ---------- Ultra HDR path ----------
+ *
+ * three.js's UltraHDRLoader does the gain-map math correctly in
+ * `_applyGainmapToSDR`, but its JPEG section scanner mis-parses real-world
+ * files that carry an ICC-profile APP2 before the MPF APP2 (e.g. produced by
+ * @realsee/hdr-toolbox), reading a bogus MPF offset -> "Invalid typed array
+ * length". @monogrid/gainmap-js is not an option here because its decoder
+ * relies on WebGLRenderer.readRenderTargetPixels, which WebGPURenderer lacks.
+ *
+ * So: try the built-in loader first; if it throws, parse the JPEG ourselves
+ * (proper APP1/APP2 + MPF handling) to extract the primary + gain-map images
+ * and both XMP packets, then reuse the loader's own `_applyGainmapToSDR` to
+ * produce the half-float HDR DataTexture.
+ */
 async function loadUltraHDR(buffer, renderer) {
+  try {
+    return await loadUltraHDRBuiltin(buffer);
+  } catch (builtinErr) {
+    console.warn(
+      '[loader] UltraHDRLoader scanner failed, using robust MPF parser:',
+      builtinErr.message
+    );
+    return await loadUltraHDRRobust(buffer);
+  }
+}
+
+async function loadUltraHDRBuiltin(buffer) {
   const loader = new UltraHDRLoader();
   // HalfFloat keeps HDR headroom; renderer must support it (WebGPU does).
 
   const { texture, texData } = await new Promise((resolve, reject) => {
     try {
       loader.parse(buffer, (data) => {
-        const tex = new DataTexture(
-          data.data,
-          data.width,
-          data.height
-        );
+        const tex = new DataTexture(data.data, data.width, data.height);
         tex.type = loader.type;
         tex.format = RGBAFormat;
         tex.needsUpdate = true;
@@ -127,20 +152,103 @@ async function loadUltraHDR(buffer, renderer) {
     }
   });
 
+  return finishHDR(texture, texData, buffer, 'three/UltraHDRLoader');
+}
+
+/**
+ * Robust path: parse JPEG segments correctly, extract primary + gain-map
+ * images and XMP, then drive three's `_applyGainmapToSDR` directly.
+ */
+async function loadUltraHDRRobust(buffer) {
+  const parsed = parseUltraHDRJPEG(buffer);
+  if (!parsed) {
+    throw new Error(
+      'THREE.UltraHDRLoader: 无法从该 Ultra HDR 文件中解析出 gain map。'
+    );
+  }
+
+  const loader = new UltraHDRLoader();
+
+  // Reuse the loader's XMP parser for metadata (populated from the gain-map
+  // descriptor XMP, which carries hdrgm:Version etc.).
+  const xmpMetadata = {
+    version: null,
+    baseRenditionIsHDR: null,
+    gainMapMin: null,
+    gainMapMax: null,
+    gamma: null,
+    offsetSDR: null,
+    offsetHDR: null,
+    hdrCapacityMin: null,
+    hdrCapacityMax: null,
+  };
+  for (const xmp of parsed.xmpPackets) {
+    loader._parseXMPMetadata(xmp, xmpMetadata);
+  }
+  if (!xmpMetadata.version) {
+    // Some files only expose version in the primary container; default to 1.0
+    xmpMetadata.version = '1.0';
+  }
+
+  const texData = await new Promise((resolve, reject) => {
+    loader._applyGainmapToSDR(
+      xmpMetadata,
+      parsed.primaryImage,
+      parsed.gainmapImage,
+      (hdrBuffer, width, height) =>
+        resolve({
+          data: hdrBuffer,
+          width,
+          height,
+          format: RGBAFormat,
+          type: loader.type,
+        }),
+      (error) => reject(new Error(error))
+    );
+  });
+
+  const texture = new DataTexture(
+    texData.data,
+    texData.width,
+    texData.height,
+    RGBAFormat,
+    loader.type
+  );
+  texture.colorSpace = LinearSRGBColorSpace;
+  texture.needsUpdate = true;
+
+  return finishHDR(texture, texData, buffer, 'robust-mpf-parser');
+}
+
+/** Common post-processing for both HDR decode paths. */
+async function finishHDR(texture, texData, buffer, decoder) {
   const width = texData.width;
   const height = texData.height;
   validateRatio(width, height);
 
+  // Configure for equirectangular background use. HDR data is linear light,
+  // so use LinearSRGBColorSpace. Avoid mipmaps on the very large half-float
+  // texture (they can fail to generate for float textures in WebGPU and are
+  // unnecessary for a full-screen background).
   texture.mapping = EquirectangularReflectionMapping;
-  texture.minFilter = LinearMipmapLinearFilter;
+  texture.colorSpace = LinearSRGBColorSpace;
+  texture.wrapS = RepeatWrapping;
+  texture.wrapT = ClampToEdgeWrapping;
+  texture.minFilter = LinearFilter;
   texture.magFilter = LinearFilter;
-  texture.generateMipmaps = true;
-  texture.flipY = true;
+  texture.generateMipmaps = false;
+  texture.flipY = false;
   texture.needsUpdate = true;
 
-  // Build an SDR preview bitmap for the minimap by tone-mapping is overkill;
-  // we draw the half-float data to a canvas at reduced size.
-  const previewBitmap = await hdrDataToBitmap(texData);
+  // Minimap preview: the primary (base) image inside an Ultra HDR JPEG is a
+  // valid SDR JPEG, so decode it directly (fast, correct colors). Fall back
+  // to tone-mapping the half-float data if that fails.
+  let previewBitmap;
+  try {
+    previewBitmap = await createImageBitmap(new Blob([buffer]));
+  } catch {
+    previewBitmap = await hdrDataToBitmap(texData);
+  }
 
   return {
     texture,
@@ -151,7 +259,158 @@ async function loadUltraHDR(buffer, renderer) {
     isHDR: true,
     letterboxed: width / height > RATIO + 1e-3,
     previewBitmap,
+    decoder,
   };
+}
+
+/**
+ * Parse an Ultra HDR JPEG into { primaryImage, gainmapImage, xmpPackets }.
+ *
+ * Walks JPEG marker segments properly (honoring each segment's length), reads
+ * the MPF (APP2 "MPF\0") Multi-Picture Format directory to locate the primary
+ * and gain-map sub-images, and collects all APP1 XMP packets.
+ *
+ * @param {ArrayBuffer} buffer
+ * @returns {{primaryImage:Uint8Array, gainmapImage:Uint8Array, xmpPackets:string[]}|null}
+ */
+function parseUltraHDRJPEG(buffer) {
+  const data = new DataView(buffer);
+  const u8 = new Uint8Array(buffer);
+  const len = data.byteLength;
+  if (data.getUint16(0) !== 0xffd8) return null; // not a JPEG
+
+  const xmpPackets = [];
+  let mpf = null; // { offset: byteOffset of MPF payload start }
+
+  let i = 2;
+  while (i < len - 1) {
+    if (data.getUint8(i) !== 0xff) {
+      i++;
+      continue;
+    }
+    const marker = data.getUint8(i + 1);
+    // Standalone markers without length.
+    if (
+      marker === 0xd8 ||
+      marker === 0xd9 ||
+      (marker >= 0xd0 && marker <= 0xd7)
+    ) {
+      i += 2;
+      continue;
+    }
+    if (marker === 0xda) break; // SOS: start of scan, stop scanning headers.
+    if (marker === 0xff) {
+      i++;
+      continue;
+    }
+    const segLen = data.getUint16(i + 2);
+    const payloadStart = i + 4;
+    const payloadEnd = i + 2 + segLen;
+
+    if (marker === 0xe1) {
+      // APP1 — could be XMP (identifier "http://ns.adobe.com/xap/1.0/\0").
+      const text = latin1(u8.subarray(payloadStart, payloadEnd), payloadEnd - payloadStart);
+      const xmlStart = text.indexOf('<x:xmpmeta');
+      const altStart = text.indexOf('<?xpacket');
+      const start = xmlStart >= 0 ? xmlStart : altStart;
+      if (start >= 0) xmpPackets.push(text.substring(start));
+    } else if (marker === 0xe2) {
+      // APP2 — MPF segment starts with "MPF\0".
+      if (
+        data.getUint8(payloadStart) === 0x4d && // M
+        data.getUint8(payloadStart + 1) === 0x50 && // P
+        data.getUint8(payloadStart + 2) === 0x46 && // F
+        data.getUint8(payloadStart + 3) === 0x00
+      ) {
+        mpf = { tiffStart: payloadStart + 4 };
+      }
+    }
+    i = payloadEnd;
+  }
+
+  if (!mpf) return null;
+
+  const images = parseMPF(data, mpf.tiffStart);
+  if (!images || images.length < 2) return null;
+
+  // Image 0 is the primary; image 1 is the gain map. MPF offsets for the
+  // primary are relative to 0; for others relative to the MPF TIFF header
+  // start (per the MPF spec, "individual image data offset" is from the
+  // beginning of the APP2 field's TIFF header).
+  const primary = images[0];
+  const gain = images[1];
+
+  const primaryImage = u8.subarray(
+    primary.offset === 0 ? 0 : primary.offset,
+    (primary.offset === 0 ? 0 : primary.offset) + primary.size
+  );
+  const gainmapImage = u8.subarray(gain.offset, gain.offset + gain.size);
+
+  // The gain-map *descriptor* metadata (hdrgm:GainMapMax, Gamma, HDRCapacity…)
+  // lives in the gain-map sub-image's own APP1 XMP, not in the outer file.
+  // The outer scan above stops at the first SOS and never reaches it, so pull
+  // it from the gain-map image explicitly.
+  const gainXmp = extractFirstXMP(gainmapImage);
+  if (gainXmp) xmpPackets.push(gainXmp);
+
+  return { primaryImage, gainmapImage, xmpPackets };
+}
+
+/** Find the first <x:xmpmeta>…</x:xmpmeta> packet within a JPEG byte range. */
+function extractFirstXMP(bytes) {
+  // Scan the first 128KB (XMP lives in early APP1 segments).
+  const limit = Math.min(bytes.length, 131072);
+  const text = latin1(bytes, limit);
+  const start = text.indexOf('<x:xmpmeta');
+  if (start < 0) return null;
+  const end = text.indexOf('</x:xmpmeta>', start);
+  if (end < 0) return text.substring(start);
+  return text.substring(start, end + '</x:xmpmeta>'.length);
+}
+
+/**
+ * Parse the MPF (Multi-Picture Format) TIFF-structured directory.
+ * Returns array of { size, offset } for each image.
+ */
+function parseMPF(data, tiffStart) {
+  // Byte order: "II" (0x4949) little-endian or "MM" (0x4d4d) big-endian.
+  const bo = data.getUint16(tiffStart);
+  const le = bo === 0x4949;
+  const u16 = (o) => data.getUint16(o, le);
+  const u32 = (o) => data.getUint32(o, le);
+
+  // 0x002A at tiffStart+2, then offset to first IFD at tiffStart+4.
+  const ifdOffset = u32(tiffStart + 4);
+  const ifdStart = tiffStart + ifdOffset;
+  const count = u16(ifdStart);
+
+  let mpEntryOffset = null;
+  let numberOfImages = 0;
+  for (let e = 0; e < count; e++) {
+    const entry = ifdStart + 2 + e * 12;
+    const tag = u16(entry);
+    if (tag === 0xb001) {
+      // Number of Images
+      numberOfImages = u32(entry + 8);
+    } else if (tag === 0xb002) {
+      // MP Entry — value is an offset (relative to TIFF header) to the list.
+      mpEntryOffset = tiffStart + u32(entry + 8);
+    }
+  }
+  if (mpEntryOffset == null || numberOfImages === 0) return null;
+
+  const images = [];
+  for (let n = 0; n < numberOfImages; n++) {
+    const base = mpEntryOffset + n * 16;
+    // bytes: 4 (attr) | 4 (size) | 4 (offset) | 2 (dep1) | 2 (dep2)
+    const size = u32(base + 4);
+    let offset = u32(base + 8);
+    // Offsets are relative to the TIFF header start, except the first image
+    // (the primary) whose offset is 0 and means the start of the file.
+    if (offset !== 0) offset += tiffStart;
+    images.push({ size, offset });
+  }
+  return images;
 }
 
 /* ---------- SDR path (jpg/png/avif) ---------- */
