@@ -7,3 +7,6 @@ npm-debug.log*
 
 # Generated test screenshots
 test/shot_*.png
+
+# Ad-hoc debug scripts
+dbg*.mjs
