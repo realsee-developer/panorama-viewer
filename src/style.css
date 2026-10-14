@@ -1,0 +1,393 @@
+/* ============================================================
+   Panorama Viewer — Swiss / International Typographic Style
+   Grid-driven, high-contrast, Helvetica-ish, red accent.
+   ============================================================ */
+
+:root {
+  --bg: #0a0a0a;
+  --fg: #f2f2f2;
+  --muted: #8a8a8a;
+  --line: rgba(242, 242, 242, 0.16);
+  --accent: #e2231a; /* Swiss red */
+  --panel-bg: rgba(10, 10, 10, 0.72);
+  --panel-blur: 14px;
+  --pad: 24px;
+  --font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* The `hidden` attribute must win over explicit `display` values
+   (e.g. `.loader { display: flex }`), otherwise hidden overlays keep
+   capturing pointer events. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- Stage / canvas ---------- */
+#stage {
+  position: fixed;
+  inset: 0;
+}
+
+#view {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none; /* we handle gestures manually */
+  cursor: grab;
+}
+
+#view.grabbing {
+  cursor: grabbing;
+}
+
+/* ---------- Dropzone / empty state ---------- */
+.dropzone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  background: var(--bg);
+  transition: background 0.2s ease, opacity 0.25s ease;
+}
+
+.dropzone.dragover {
+  background: #111;
+}
+
+.dropzone.dragover .dropzone__inner {
+  border-color: var(--accent);
+}
+
+.dropzone.hidden-fade {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dropzone__inner {
+  position: relative;
+  width: min(78vw, 560px);
+  border: 1px solid var(--line);
+  padding: clamp(28px, 6vw, 64px);
+  transition: border-color 0.2s ease;
+}
+
+.dropzone__index {
+  font-size: 12px;
+  letter-spacing: 0.25em;
+  color: var(--accent);
+  margin-bottom: 28px;
+}
+
+.dropzone__title {
+  font-size: clamp(40px, 9vw, 92px);
+  line-height: 0.92;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 28px;
+}
+
+.dropzone__hint {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--fg);
+  margin-bottom: 32px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
+.btn {
+  appearance: none;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  padding: 13px 28px;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+
+.btn:hover {
+  background: #ff3429;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+/* ---------- Info / Minimap panel (top-left) ---------- */
+.panel {
+  position: fixed;
+  top: var(--pad);
+  left: var(--pad);
+  z-index: 30;
+  width: 288px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(var(--panel-blur));
+  -webkit-backdrop-filter: blur(var(--panel-blur));
+  border: 1px solid var(--line);
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.panel__label {
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  color: var(--muted);
+}
+
+.panel__meta {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel__meta dl {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  row-gap: 8px;
+  column-gap: 12px;
+  font-size: 13px;
+}
+
+.panel__meta dt {
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.panel__meta dd {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.panel__meta dd.on {
+  color: var(--accent);
+}
+
+/* Minimap */
+.panel__map {
+  padding: 16px;
+}
+
+#minimap {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 1;
+  background: #000;
+  border: 1px solid var(--line);
+  cursor: crosshair;
+}
+
+.panel__maphint {
+  margin-top: 10px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* ---------- HDR badge (bottom-left) ---------- */
+.hdrBadge {
+  position: fixed;
+  left: var(--pad);
+  bottom: var(--pad);
+  z-index: 30;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  background: var(--panel-bg);
+  backdrop-filter: blur(var(--panel-blur));
+  -webkit-backdrop-filter: blur(var(--panel-blur));
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.hdrBadge__key {
+  padding: 8px 12px;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+}
+
+.hdrBadge__val {
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
+.hdrBadge__val.ok {
+  color: #27d07a;
+}
+.hdrBadge__val.no {
+  color: var(--muted);
+}
+.hdrBadge__val.warn {
+  color: #f5a623;
+}
+
+/* ---------- Mobile minimap toggle (bottom-right) ---------- */
+.mapToggle {
+  position: fixed;
+  right: var(--pad);
+  bottom: var(--pad);
+  z-index: 35;
+  width: 52px;
+  height: 52px;
+  font-size: 22px;
+  line-height: 1;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  display: none;
+}
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed;
+  top: var(--pad);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: min(90vw, 480px);
+  padding: 14px 20px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* ---------- Loader ---------- */
+.loader {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(10, 10, 10, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.loader__bar {
+  width: 200px;
+  height: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.loader__fill {
+  width: 40%;
+  height: 100%;
+  background: var(--accent);
+  animation: slide 1s ease-in-out infinite;
+}
+
+@keyframes slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.loader__text {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+}
+
+/* ============================================================
+   Responsive — mobile: minimap becomes a modal overlay
+   ============================================================ */
+@media (max-width: 720px) {
+  :root {
+    --pad: 14px;
+  }
+
+  .mapToggle {
+    display: block;
+  }
+
+  /* Panel turns into a centered modal, hidden by default */
+  .panel {
+    top: 50%;
+    left: 50%;
+    width: min(92vw, 420px);
+    transform: translate(-50%, -50%) scale(0.96);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    max-height: 86vh;
+    overflow: auto;
+  }
+
+  .panel.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+  }
+
+  /* Dim backdrop when modal open */
+  body.panel-open::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    background: rgba(0, 0, 0, 0.6);
+  }
+
+  .hdrBadge {
+    font-size: 10px;
+  }
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .loader__fill {
+    animation: none;
+  }
+}

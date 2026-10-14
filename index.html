@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Panorama Viewer — WebGPU HDR</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0a0a'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23e2231a' stroke-width='2.5'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <!-- Panorama render canvas lives here -->
+    <div id="stage">
+      <canvas id="view"></canvas>
+
+      <!-- Drop / empty state -->
+      <div id="dropzone" class="dropzone">
+        <div class="dropzone__inner">
+          <div class="dropzone__index">01</div>
+          <h1 class="dropzone__title">Panorama<br />Viewer</h1>
+          <p class="dropzone__hint">
+            拖拽图片到此处 · 或点击选择<br />
+            <span class="muted">AVIF · JPG · PNG · Ultra&nbsp;HDR JPG</span>
+          </p>
+          <button id="pickBtn" class="btn">选择文件</button>
+          <input id="fileInput" type="file" accept="image/*,.jpg,.jpeg,.png,.avif" hidden />
+        </div>
+      </div>
+    </div>
+
+    <!-- Top-left info / minimap panel -->
+    <aside id="panel" class="panel" hidden>
+      <header class="panel__head">
+        <span class="panel__dot"></span>
+        <span class="panel__label">META</span>
+      </header>
+
+      <div class="panel__meta">
+        <dl>
+          <dt>格式</dt><dd id="metaFormat">—</dd>
+          <dt>分辨率</dt><dd id="metaRes">—</dd>
+          <dt>宽高比</dt><dd id="metaRatio">—</dd>
+          <dt>HDR</dt><dd id="metaHdr">—</dd>
+        </dl>
+      </div>
+
+      <!-- Minimap: equirectangular thumbnail + viewport overlay -->
+      <figure class="panel__map">
+        <canvas id="minimap"></canvas>
+        <figcaption class="panel__maphint">点击缩略图 · 看向对应方向</figcaption>
+      </figure>
+    </aside>
+
+    <!-- HDR support status badge -->
+    <div id="hdrBadge" class="hdrBadge" hidden>
+      <span class="hdrBadge__key">显示器 HDR</span>
+      <span id="hdrBadgeVal" class="hdrBadge__val">检测中…</span>
+    </div>
+
+    <!-- Mobile: floating button to open minimap as modal -->
+    <button id="mapToggle" class="mapToggle" hidden aria-label="打开缩略图">◰</button>
+
+    <!-- Toast / error messages -->
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- Loading spinner -->
+    <div id="loader" class="loader" hidden>
+      <div class="loader__bar"><div class="loader__fill"></div></div>
+      <span class="loader__text">解码中…</span>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
