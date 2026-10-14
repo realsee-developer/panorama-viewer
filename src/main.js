@@ -62,6 +62,7 @@ async function init() {
 
   // Debug/test hook: read current view state.
   window.__view = () => viewer.getView();
+  window.__setView = (lon, lat) => viewer.setView(lon, lat);
 
   bindUI();
 }

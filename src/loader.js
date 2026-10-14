@@ -240,7 +240,11 @@ async function finishHDR(texture, texData, buffer, decoder) {
   texture.minFilter = LinearFilter;
   texture.magFilter = LinearFilter;
   texture.generateMipmaps = false;
-  texture.flipY = false;
+  // The gain-map decode writes rows top-to-bottom; three's equirectangular
+  // background samples with the opposite vertical convention, so flip Y to
+  // avoid an upside-down panorama. (The built-in UltraHDRLoader also sets
+  // flipY = true on its DataTexture.)
+  texture.flipY = true;
   texture.needsUpdate = true;
 
   // Minimap preview: the primary (base) image inside an Ultra HDR JPEG is a
