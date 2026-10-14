@@ -475,6 +475,12 @@ body {
   }
 }
 
+/* Suppress all transitions briefly (e.g. during a PC<->mobile layout switch)
+   so the panel doesn't animate from its old state and leave a ghost. */
+.resizing * {
+  transition: none !important;
+}
+
 /* Respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .loader__fill {

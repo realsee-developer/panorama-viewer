@@ -151,7 +151,24 @@ function bindUI() {
     }
   });
 
-  window.addEventListener('resize', () => minimap && minimap.resize());
+  // On resize (incl. the PC<->mobile layout switch) temporarily kill
+  // transitions so the panel doesn't animate from its old state (ghosting),
+  // then restore them on the next frame.
+  let resizeRAF = 0;
+  let resizeClear = 0;
+  window.addEventListener('resize', () => {
+    document.body.classList.add('resizing');
+    if (minimap) minimap.resize();
+    cancelAnimationFrame(resizeRAF);
+    clearTimeout(resizeClear);
+    resizeRAF = requestAnimationFrame(() => {
+      // Keep it off for a tick past the last resize event, then re-enable.
+      resizeClear = setTimeout(
+        () => document.body.classList.remove('resizing'),
+        100
+      );
+    });
+  });
 }
 
 // ---------- file handling ----------
