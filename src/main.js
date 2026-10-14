@@ -47,9 +47,9 @@ init().catch((err) => {
 });
 
 async function init() {
-  // HDR display detection (independent of whether an image is loaded).
+  // HDR display detection (independent of whether an image is loaded). The
+  // badge itself stays hidden until an image is loaded.
   displayHDR = detectDisplayHDR();
-  hdrBadge.hidden = false;
   renderHDRBadge();
   if (displayHDR.mql && displayHDR.mql.addEventListener) {
     displayHDR.mql.addEventListener('change', (e) => {
@@ -190,6 +190,7 @@ async function handleFile(file) {
     // Reveal viewer.
     dropzone.classList.add('hidden-fade');
     mapToggle.hidden = false;
+    hdrBadge.hidden = false;
     renderHDRBadge(hdrResult);
 
     if (result.letterboxed) {
