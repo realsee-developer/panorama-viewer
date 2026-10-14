@@ -1,51 +1,55 @@
 # Panorama Viewer — WebGPU · HDR
 
-一个基于 **three.js WebGPU** 的全景图查看器。拖拽一张等距圆柱（equirectangular）全景图即可浏览，支持 **Ultra HDR** 图片的真 HDR 显示。
+**English** · [简体中文](./README_CN.md)
 
-## 功能
+A panorama viewer built on **three.js WebGPU**. Drag in an equirectangular panorama to explore it, with **true HDR** display for **Ultra HDR** images.
 
-- **格式支持**：AVIF · JPG · PNG · Ultra HDR JPG（gain map）
-- **交互**：鼠标 / 手指拖拽改变视角；滚轮 / 双指 pinch 缩放（改变 FOV）
-- **真 HDR**：加载 Ultra HDR 图片时，通过 WebGPU 将画布重配置为 `rgba16float` + extended tone mapping 输出真 HDR；页面显示显示器 HDR 支持情况（`matchMedia('(dynamic-range: high)')`）
-- **元信息 + 缩略图**：左上角显示原图格式、分辨率、宽高比、HDR 状态；缩略图以等距圆柱方式渲染，当前视角区域高亮、其余变暗，支持点击看向对应方向
-- **宽高比校验**：宽高比 `< 2:1` 直接报错；`> 2:1` 自动上下留黑边（letterbox）
-- **瑞士国际主义风格 UI**：网格化、高对比、红色点缀；移动端缩略图以弹层（modal）显示
+🔗 Live demo: https://realsee-developer.github.io/panorama-viewer/
 
-## 技术要点
+## Features
 
-- `WebGPURenderer`（`three/webgpu`）以**等距圆柱背景**（`scene.background` + equirectangular mapping）渲染全景，相机位于原点，按相机光线方向逐像素绘制。相比把大尺寸半浮点纹理贴到球面材质，背景路径对 HDR 浮点纹理更稳定。
-- Ultra HDR 解码**不使用** three.js 的 `UltraHDRLoader`，原因有二：
-  - 其 JPEG 段扫描器对部分真实文件（含 ICC APP2 段、`@realsee/hdr-toolbox` 生成）会误读 MPF 偏移而抛 `Invalid typed array length`；
-  - 更关键的是它把 `maxDisplayBoost` **写死**为 `sqrt(1.8 ^ HDRCapacityMax)`，约等于内容 HDR 能力的一半，导致增益图被严重欠应用、画面灰暗发白。
-- 本项目自行实现 Ultra HDR 解码：正确遍历 JPEG 段读取 **MPF（APP2 "MPF\0"）** 定位 primary 与 gain-map 两张子图，从 **gain-map 子图自身的 APP1 XMP** 读取增益图元数据（`GainMapMax`、`Gamma`、`HDRCapacityMax` 等），然后把 **增益图合成放到 GPU**（TSL `scene.backgroundNode`）：按 Android / ISO 21496-1 公式 `hdr = (sdr + offsetSDR) * 2^(logBoost·weight) - offsetHDR` 逐像素恢复 HDR。
-- **maxDisplayBoost 实时可调**：由于合成在 GPU 上进行，`maxDisplayBoost` 是一个 uniform，左上角面板提供滑块（仅 Ultra HDR 图显示），范围 `1×（纯 SDR）~ 2^HDRCapacityMax（完整 HDR 强度）`，拖动即时生效、无需重新解码。
-- HDR 画布：three.js 默认把 WebGPU 画布配置为 8-bit SDR 预览格式，因此我们在 `renderer.init()` 之后取出同一个 `GPUCanvasContext`，用 `rgba16float` + `colorSpace: 'display-p3'` + `toneMapping: { mode: 'extended' }` 重新 `configure()`，并同步覆盖 `getPreferredCanvasFormat` 让 three 内部缓冲格式匹配，使超过 SDR 白点（> 1.0）的像素映射到显示器的 HDR headroom。
+- **Formats**: AVIF · JPG · PNG · Ultra HDR JPG (gain map)
+- **Controls**: drag with mouse / finger to look around; wheel / two-finger pinch to zoom (changes FOV)
+- **True HDR**: for Ultra HDR images the WebGPU canvas is reconfigured to `rgba16float` + extended tone mapping for genuine HDR output; the page reports the display's HDR capability (`matchMedia('(dynamic-range: high)')`)
+- **Meta + minimap**: the top-left panel shows the source format, resolution, aspect ratio and HDR status; the minimap renders the equirectangular thumbnail with the current view highlighted and the rest dimmed (drawn as a correct pole cap near the zenith/nadir), and you can click it to look that way
+- **Aspect-ratio validation**: ratio `< 2:1` is rejected; `> 2:1` is automatically letterboxed (black bars top & bottom)
+- **Swiss / International Typographic style UI**: grid-driven, high-contrast, red accent; on mobile the minimap opens as a modal
 
-## 开发
+## How it works
+
+- `WebGPURenderer` (`three/webgpu`) renders the panorama as an **equirectangular background** (`scene.background` + equirectangular mapping) with the camera at the origin, shading each pixel from the camera ray direction. The background path is more robust for large half-float HDR textures than mapping them onto a sphere material.
+- Ultra HDR decoding does **not** use three.js's `UltraHDRLoader`, for two reasons:
+  - its JPEG segment scanner misreads the MPF offset on some real-world files (those carrying an ICC APP2 segment, e.g. produced by `@realsee/hdr-toolbox`) and throws `Invalid typed array length`;
+  - more importantly it **hardcodes** `maxDisplayBoost` to `sqrt(1.8 ^ HDRCapacityMax)` — roughly half the content's HDR capacity — which under-applies the gain map and leaves the image washed-out and flat.
+- This project implements Ultra HDR decoding itself: it walks the JPEG segments to read the **MPF (APP2 "MPF\0")** directory and locate the primary and gain-map sub-images, reads the gain-map metadata (`GainMapMax`, `Gamma`, `HDRCapacityMax`, …) from the **gain-map sub-image's own APP1 XMP**, then composites the gain map **on the GPU** (TSL `scene.backgroundNode`), recovering HDR per the Android / ISO 21496-1 formula `hdr = (sdr + offsetSDR) * 2^(logBoost·weight) - offsetHDR`.
+- **Live maxDisplayBoost**: because compositing happens on the GPU, `maxDisplayBoost` is a uniform, exposed as a slider in the top-left panel (Ultra HDR images only). HDR headroom is measured in stops (log2) — real HDR displays typically offer only 1.5–4 stops — so the slider ranges from `1× (pure SDR)` to `16× (4 stops)`, defaulting to `8× (3 stops)`. Dragging it takes effect instantly, with no re-decode.
+- HDR canvas: three.js configures the WebGPU canvas as an 8-bit SDR preview format by default, so after `renderer.init()` we grab the same `GPUCanvasContext` and `configure()` it with `rgba16float` + `colorSpace: 'display-p3'` + `toneMapping: { mode: 'extended' }`, and also override `getPreferredCanvasFormat` so three's internal buffers match — mapping pixels above the SDR white point (> 1.0) into the display's HDR headroom.
+
+## Development
 
 ```bash
 npm install
-npm run dev      # 本地开发
-npm run build    # 产物输出到 dist/
-npm run preview  # 预览构建产物
+npm run dev      # local dev server
+npm run build    # output to dist/
+npm run preview  # preview the production build
 ```
 
-> 需要支持 WebGPU 的浏览器（Chrome / Edge 113+）。真 HDR 效果还需要 HDR 显示器并在系统中开启 HDR。
+> Requires a WebGPU-capable browser (Chrome / Edge 113+). True HDR also needs an HDR display with HDR enabled in the OS.
 
-## 部署
+## Deployment
 
-推送到 `main` 分支后，GitHub Actions（`.github/workflows/deploy.yml`）自动构建并发布到 GitHub Pages。
+On push to the `main` branch, GitHub Actions (`.github/workflows/deploy.yml`) builds and publishes to GitHub Pages automatically.
 
-在仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions** 即可。
+In the repo, go to **Settings → Pages → Build and deployment → Source** and select **GitHub Actions**.
 
-Vite 的 `base` 设为 `'./'`（相对路径），因此无论仓库名是什么，项目页子路径都能正确加载资源。
+Vite's `base` is set to `'./'` (relative paths), so the assets load correctly from the project-page subpath regardless of the repo name.
 
-## 浏览器兼容性说明
+## Browser compatibility
 
-| 能力 | 要求 |
+| Capability | Requirement |
 | --- | --- |
-| 基础渲染 | WebGPU（Chrome/Edge 113+） |
-| 真 HDR 输出 | Chrome 121+ 的 canvas `rgba16float` + extended tone mapping，且系统/显示器开启 HDR |
-| AVIF 解码 | 浏览器原生 `createImageBitmap` 支持 AVIF |
+| Base rendering | WebGPU (Chrome/Edge 113+) |
+| True HDR output | Chrome 121+ canvas `rgba16float` + extended tone mapping, with HDR enabled in the OS/display |
+| AVIF decoding | Native `createImageBitmap` AVIF support |
 
-若浏览器不支持 HDR 画布，Ultra HDR 图片会回退为 SDR 显示（页面会标注）。
+If the browser does not support an HDR canvas, Ultra HDR images fall back to SDR display (the page labels this).
