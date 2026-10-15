@@ -13,6 +13,7 @@ import {
   uniform,
   equirectUV,
   normalWorld,
+  vec2,
   vec3,
   vec4,
   float,
@@ -204,10 +205,14 @@ export class PanoramaViewer {
     const hdrCapMax = float(m.hdrCapacityMax);
 
     const node = Fn(() => {
-      const uv = equirectUV(normalWorld);
-      // Sample both textures at the equirectangular UV. In TSL, texture(tex, uv)
-      // performs the sample; the SDR texture is tagged sRGB so three returns it
-      // already linearized.
+      // equirectUV(normalWorld) maps the ray direction to equirectangular UV.
+      // We sample the textures with this explicit UV, so the textures' own
+      // `flipY` flag does NOT apply here — flip V ourselves so the HDR
+      // orientation matches the SDR (`scene.background`) path.
+      const baseUV = equirectUV(normalWorld);
+      const uv = vec2(baseUV.x, float(1.0).sub(baseUV.y));
+      // In TSL, texture(tex, uv) performs the sample; the SDR texture is tagged
+      // sRGB so three returns it already linearized.
       const sdrLinear = textureNode(sdrTexture, uv).rgb;
       const gain = textureNode(gainTexture, uv).rgb;
 
