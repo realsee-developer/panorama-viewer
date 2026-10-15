@@ -123,9 +123,10 @@ export class PanoramaViewer {
   /**
    * Set the panorama. Accepts either:
    *   - an SDR `THREE.Texture` (equirectangular), or
-   *   - an HDR descriptor `{ sdrTexture, gainTexture, gainMeta }` for
-   *     Ultra HDR, which is composited on the GPU so maxDisplayBoost can be
-   *     adjusted live.
+   *   - an HDR descriptor `{ sdrTexture, gainTexture, gainMeta }` for both
+   *     Ultra HDR JPEGs and .exr/.hdr files (the latter are converted to an
+   *     SDR base + gain map in the loader), composited on the GPU so
+   *     maxDisplayBoost can be adjusted live.
    */
   setPanorama(input) {
     this._disposePano();

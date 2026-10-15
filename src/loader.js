@@ -3,27 +3,38 @@
  *
  * Supported inputs:
  *   - Ultra HDR JPG (gain-map): parsed in-house (MPF + XMP) into an SDR base
- *     texture + gain-map texture + metadata, composited to HDR on the GPU in
- *     viewer.js (so maxDisplayBoost is adjustable live).
+ *     + gain-map + metadata, composited to HDR on the GPU in viewer.js (so
+ *     maxDisplayBoost is adjustable live).
+ *   - Radiance HDR (.hdr) / OpenEXR (.exr): true linear-float equirectangular
+ *     panoramas. Decoded to half-float, then converted to an SDR base + gain
+ *     map (hdrToGainMap) so they render through the same gain-map path.
  *   - Plain JPG / PNG / AVIF (SDR): decoded via createImageBitmap.
+ *
+ * Unified pipeline: every format is decoded into PixelBuffer(s), run through a
+ * SINGLE letterbox step (letterboxPixelBuffer), then turned into DataTextures.
  *
  * Aspect-ratio policy (equirectangular panoramas are 2:1):
  *   - ratio < 2:1  -> reject (not a panorama / too tall).
  *   - ratio == 2:1 -> use as-is.
- *   - ratio > 2:1  -> too wide/short; letterbox onto a 2:1 canvas (black bars
- *     top & bottom) so the equirectangular mapping stays correct.
+ *   - ratio > 2:1  -> too wide/short; letterbox onto a 2:1 buffer (black bars
+ *     top & bottom) so the equirectangular mapping stays correct. The same
+ *     letterbox runs for SDR, Ultra HDR (base + gain) and EXR/HDR.
  */
 
 import {
   ClampToEdgeWrapping,
+  DataTexture,
+  DataUtils,
   EquirectangularReflectionMapping,
+  HalfFloatType,
   LinearFilter,
-  LinearMipmapLinearFilter,
   LinearSRGBColorSpace,
+  RGBAFormat,
   RepeatWrapping,
   SRGBColorSpace,
-  Texture,
 } from 'three/webgpu';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
+import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 
 const RATIO = 2; // target width : height
 
@@ -40,6 +51,14 @@ export function sniffFormat(bytes) {
     const brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
     if (brand.startsWith('avi')) return 'avif';
     return 'heif';
+  }
+  // OpenEXR: magic number 0x76 0x2F 0x31 0x01 (little-endian 20000630).
+  if (b[0] === 0x76 && b[1] === 0x2f && b[2] === 0x31 && b[3] === 0x01)
+    return 'exr';
+  // Radiance HDR / RGBE: ASCII header starts with "#?RADIANCE" or "#?RGBE".
+  if (b[0] === 0x23 && b[1] === 0x3f) {
+    const sig = String.fromCharCode(b[2], b[3], b[4], b[5], b[6], b[7]);
+    if (sig.startsWith('RADIAN') || sig.startsWith('RGBE')) return 'hdr';
   }
   return 'unknown';
 }
@@ -87,6 +106,30 @@ export class AspectRatioError extends Error {
   }
 }
 
+/* ============================================================================
+ * Unified pipeline
+ *
+ * Every input format is decoded into one or more PixelBuffers (a plain,
+ * format-agnostic pixel container), run through a SINGLE letterbox step, and
+ * only then turned into GPU textures. This keeps the aspect-ratio handling
+ * identical for SDR, Ultra HDR and EXR/HDR instead of three separate code
+ * paths.
+ *
+ *   PixelBuffer = {
+ *     data: Uint8ClampedArray | Uint16Array,  // RGBA, row-major, top-origin
+ *     width, height,
+ *     kind: 'u8' | 'half',                     // 8-bit sRGB codes vs half-float
+ *     flipY: boolean,                          // flip vertically on GPU upload
+ *                                              // (texture.flipY); it also tells
+ *                                              // the preview to read bottom-up
+ *   }
+ *
+ * Flow per format:
+ *   SDR        decode -> [pb]            -> letterbox -> DataTexture (sRGB)
+ *   Ultra HDR  decode -> [base, gain]    -> letterbox -> 2x DataTexture
+ *   EXR/HDR    decode -> [pb(half)]      -> letterbox -> hdrToGainMap -> 2x tex
+ * ========================================================================== */
+
 /**
  * Load and decode a File into a panorama source descriptor:
  *   - SDR:  { texture, format, width, height, ratio, isHDR:false, letterboxed, previewBitmap }
@@ -98,13 +141,302 @@ export class AspectRatioError extends Error {
  */
 export async function loadPanorama(file) {
   const buffer = await file.arrayBuffer();
-  const format = sniffFormat(buffer);
-  const hdr = format === 'jpeg' && isUltraHDR(buffer);
+  let format = sniffFormat(buffer);
 
-  if (hdr) {
+  // Extension fallback: some valid Radiance files don't begin exactly with the
+  // signatures we sniff; trust a .hdr / .exr extension when magic bytes are
+  // inconclusive.
+  if (format === 'unknown') {
+    const name = (file.name || '').toLowerCase();
+    if (name.endsWith('.exr')) format = 'exr';
+    else if (name.endsWith('.hdr')) format = 'hdr';
+  }
+
+  if (format === 'exr' || format === 'hdr') {
+    return loadFloatHDR(buffer, format);
+  }
+  if (format === 'jpeg' && isUltraHDR(buffer)) {
     return loadUltraHDR(buffer);
   }
   return loadSDR(buffer, format);
+}
+
+/* ---------- PixelBuffer core ---------- */
+
+/**
+ * Letterbox a PixelBuffer onto a 2:1 canvas: center it vertically with opaque
+ * black bars top & bottom. Works identically for 8-bit and half-float buffers
+ * — only the array type and the "alpha = 1.0" constant differ. Rows are copied
+ * whole (nearest-neighbour vertically; no resampling), so content is never
+ * blurred or stretched. If the buffer is already ≤ 2:1 it's returned as-is.
+ */
+function letterboxPixelBuffer(pb) {
+  if (pb.width / pb.height <= RATIO + 1e-3) return pb;
+
+  const dstW = pb.width;
+  const dstH = Math.round(pb.width / RATIO); // taller than source
+  const Ctor = pb.data.constructor; // Uint8ClampedArray | Uint16Array
+  const dst = new Ctor(dstW * dstH * 4); // zero-filled = black
+
+  // Opaque bars: set alpha to 1.0 everywhere (half-float 1.0 == 0x3c00).
+  const alphaOne = pb.kind === 'half' ? 0x3c00 : 255;
+  for (let i = 3; i < dst.length; i += 4) dst[i] = alphaOne;
+
+  const yOff = Math.round((dstH - pb.height) / 2);
+  const rowLen = pb.width * 4;
+  for (let dy = 0; dy < pb.height; dy++) {
+    const ty = dy + yOff;
+    if (ty < 0 || ty >= dstH) continue;
+    dst.set(pb.data.subarray(dy * rowLen, dy * rowLen + rowLen), ty * dstW * 4);
+  }
+
+  return { data: dst, width: dstW, height: dstH, kind: pb.kind, flipY: pb.flipY };
+}
+
+/** Build a DataTexture from an 8-bit sRGB PixelBuffer. */
+function textureFromU8(pb, colorSpace) {
+  const tex = new DataTexture(pb.data, pb.width, pb.height, RGBAFormat);
+  tex.colorSpace = colorSpace;
+  tex.wrapS = RepeatWrapping;
+  tex.wrapT = ClampToEdgeWrapping;
+  tex.minFilter = LinearFilter;
+  tex.magFilter = LinearFilter;
+  tex.generateMipmaps = false;
+  tex.flipY = pb.flipY;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Downsample any PixelBuffer to an SDR ImageBitmap for the minimap thumbnail.
+ * `tone(r,g,b) -> [r,g,b]` maps source pixels (linear-ish) into display [0,1];
+ * for 8-bit sRGB buffers it's identity (values already display-ready).
+ */
+async function pixelBufferToPreview(pb, tone) {
+  const maxW = 1024;
+  const outW = Math.min(maxW, pb.width);
+  const outH = Math.max(1, Math.round(outW * (pb.height / pb.width)));
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(outW, outH);
+  const out = img.data;
+  const isHalf = pb.kind === 'half';
+  const read = isHalf ? (v) => DataUtils.fromHalfFloat(v) : (v) => v;
+
+  for (let y = 0; y < outH; y++) {
+    const sy = Math.min(pb.height - 1, Math.floor((y / outH) * pb.height));
+    const readY = pb.flipY ? pb.height - 1 - sy : sy;
+    for (let x = 0; x < outW; x++) {
+      const sx = Math.min(pb.width - 1, Math.floor((x / outW) * pb.width));
+      const si = (readY * pb.width + sx) * 4;
+      const di = (y * outW + x) * 4;
+      let r = read(pb.data[si]);
+      let g = read(pb.data[si + 1]);
+      let b = read(pb.data[si + 2]);
+      if (tone) [r, g, b] = tone(r, g, b);
+      out[di] = isHalf ? Math.round(255 * clamp01(r)) : r;
+      out[di + 1] = isHalf ? Math.round(255 * clamp01(g)) : g;
+      out[di + 2] = isHalf ? Math.round(255 * clamp01(b)) : b;
+      out[di + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return createImageBitmap(canvas);
+}
+
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/**
+ * Decode an ImageBitmap into an 8-bit RGBA PixelBuffer. The canvas gives
+ * top-origin rows — the same pixel order `new Texture(bitmap)` used to upload —
+ * so we tag `flipY: true` to reproduce the previous (correct) orientation on
+ * upload for both the SDR background path and the gain-map node.
+ */
+function bitmapToPixelBuffer(bitmap) {
+  const w = bitmap.width;
+  const h = bitmap.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0);
+  const { data } = ctx.getImageData(0, 0, w, h); // Uint8ClampedArray
+  return { data, width: w, height: h, kind: 'u8', flipY: true };
+}
+
+/* ---------- Float HDR path (.exr / .hdr) ----------
+ *
+ * Radiance (.hdr) and OpenEXR (.exr) store true, absolute, linear HDR radiance
+ * per pixel. We decode to a half-float PixelBuffer, letterbox it (unified
+ * step), then convert to an SDR base + gain map so it renders through the exact
+ * same gain-map path as Ultra HDR JPEGs.
+ */
+async function loadFloatHDR(buffer, format) {
+  const loader =
+    format === 'exr'
+      ? new EXRLoader().setDataType(HalfFloatType)
+      : new HDRLoader().setDataType(HalfFloatType);
+
+  // Both loaders extend DataTextureLoader; createDataTexture(buffer) parses an
+  // in-memory ArrayBuffer and returns a fully configured DataTexture.
+  let texture;
+  try {
+    texture = loader.createDataTexture(buffer);
+  } catch (e) {
+    throw new Error(
+      `Could not decode ${format.toUpperCase()} file: ${e.message || e}`
+    );
+  }
+
+  validateRatio(texture.image.width, texture.image.height);
+  const ratio = texture.image.width / texture.image.height;
+  const letterboxed = ratio > RATIO + 1e-3;
+
+  // Decoded half-float data -> PixelBuffer -> unified letterbox.
+  let pb = {
+    data: texture.image.data, // Uint16Array half-float, RGBA
+    width: texture.image.width,
+    height: texture.image.height,
+    kind: 'half',
+    flipY: texture.flipY,
+  };
+  texture.dispose?.(); // free the decoded GPU texture; we keep the pixels
+  pb = letterboxPixelBuffer(pb);
+
+  // Convert the (letterboxed) linear HDR into an SDR base + gain map.
+  const { sdrTexture, gainTexture, gainMeta, previewBitmap } =
+    await hdrToGainMap(pb);
+
+  return {
+    hdr: { sdrTexture, gainTexture, gainMeta },
+    texture: null,
+    format: format === 'exr' ? 'OpenEXR → gain map' : 'Radiance HDR → gain map',
+    width: pb.width,
+    height: pb.height,
+    ratio: pb.width / pb.height,
+    isHDR: true,
+    hdrKind: 'gainmap',
+    letterboxed,
+    previewBitmap,
+  };
+}
+
+/**
+ * Convert a linear-light half-float HDR texture into an Ultra HDR style
+ * SDR base + gain map, returning ready-to-render DataTextures plus the
+ * gain-map metadata expected by the viewer's `_setHDRPanorama`.
+ *
+ * Port of @realsee/hdr-toolbox `linearHdrToUltraHdr` (convert.ts), minus the
+ * JPEG round-trip: we build the SDR as 8-bit sRGB codes and derive the gain
+ * map from those quantized codes (so recovery stays consistent), but keep the
+ * data as GPU textures instead of encoding to JPEG.
+ *
+ *   y      = luminance(rgb);  ySdr = y/(1+y)             (Reinhard by luma)
+ *   scale  = ySdr / y                                     (chroma-preserving)
+ *   code   = round(linearToSrgb(min(1, hdr*scale)) * 255) (8-bit SDR)
+ *   ratio  = (hdr + offset) / (srgbToLinear(code) + offset)
+ *   gain   = round(min(1, log2(max(1,ratio)) / log2(maxContentBoost)) * 255)
+ *
+ * @param {{data:Uint16Array,width,height,kind:'half',flipY}} pb half-float PixelBuffer
+ */
+async function hdrToGainMap(pb) {
+  const w = pb.width;
+  const h = pb.height;
+  const src = pb.data; // Uint16Array half-float, RGBA
+  const flipY = pb.flipY;
+
+  const toLin = (hf) => DataUtils.fromHalfFloat(hf);
+  const OFFSET = 1 / 64; // 0.015625, matches convert.ts
+
+  // Peak linear value -> content boost headroom (clamped to 2^14 like toolbox).
+  let peak = 1;
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    const r = toLin(src[o]);
+    const g = toLin(src[o + 1]);
+    const b = toLin(src[o + 2]);
+    if (r > peak) peak = r;
+    if (g > peak) peak = g;
+    if (b > peak) peak = b;
+  }
+  const maxContentBoost = Math.max(1.0001, Math.min(peak, Math.pow(2, 14)));
+  const logMax = Math.log2(maxContentBoost);
+
+  // Output buffers: RGBA8 for both (alpha = 255). SDR holds sRGB codes; gain
+  // holds normalized log-ratio codes.
+  const sdrData = new Uint8Array(w * h * 4);
+  const gainData = new Uint8Array(w * h * 4);
+
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    const r = Math.max(0, toLin(src[o]));
+    const g = Math.max(0, toLin(src[o + 1]));
+    const b = Math.max(0, toLin(src[o + 2]));
+
+    // Reinhard driven by luminance; scale chroma by the same factor so hue /
+    // saturation survive tone mapping.
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const ySdr = y / (1 + y);
+    const scale = y > 1e-6 ? ySdr / y : 0;
+
+    const rgb = [r, g, b];
+    for (let c = 0; c < 3; c++) {
+      const hdr = rgb[c];
+      const code = Math.round(
+        linearToSrgb(Math.min(1, hdr * scale)) * 255
+      );
+      sdrData[o + c] = code;
+
+      const sdrLinear = srgbToLinear(code / 255);
+      const ratio = (hdr + OFFSET) / (sdrLinear + OFFSET);
+      const logBoost = Math.log2(Math.max(1, ratio));
+      const normalized = logMax > 0 ? Math.min(1, logBoost / logMax) : 0;
+      gainData[o + c] = Math.round(normalized * 255);
+    }
+    sdrData[o + 3] = 255;
+    gainData[o + 3] = 255;
+  }
+
+  const sdrPb = { data: sdrData, width: w, height: h, kind: 'u8', flipY };
+  const gainPb = { data: gainData, width: w, height: h, kind: 'u8', flipY };
+
+  const sdrTexture = textureFromU8(sdrPb, SRGBColorSpace);
+  // Gain map is stored non-color (a multiplier map); keep it linear.
+  const gainTexture = textureFromU8(gainPb, LinearSRGBColorSpace);
+
+  // gainMeta in the viewer's expected shape. convert.ts config is in LINEAR
+  // space; the viewer reads gainMapMin/Max and hdrCapacityMin/Max in LOG2
+  // space (see parseGainMapMetadata), so convert here.
+  const gainMeta = {
+    gainMapMin: 0, // log2(minContentBoost=1)
+    gainMapMax: logMax, // log2(maxContentBoost)
+    gamma: 1,
+    offsetSDR: OFFSET,
+    offsetHDR: OFFSET,
+    hdrCapacityMin: 0, // log2(1)
+    hdrCapacityMax: logMax, // log2(maxContentBoost)
+    baseRenditionIsHDR: false,
+  };
+
+  // Minimap preview = the SDR base (already display-ready 8-bit sRGB).
+  const previewBitmap = await pixelBufferToPreview(sdrPb, null);
+
+  return { sdrTexture, gainTexture, gainMeta, previewBitmap };
+}
+
+/** Decode an 8-bit sRGB value (0-1) to linear light. */
+function srgbToLinear(v) {
+  return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+}
+
+/** Encode linear light (0-1) to an 8-bit sRGB value (0-1). */
+function linearToSrgb(v) {
+  const c = v < 0 ? 0 : v > 1 ? 1 : v;
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
 }
 
 /* ---------- Ultra HDR path ----------
@@ -152,11 +484,10 @@ async function loadUltraHDRRobust(buffer) {
 
   const gainMeta = parseGainMapMetadata(parsed.xmpPackets);
 
-  // Decode the SDR base image and the gain map as ImageBitmaps and upload them
-  // as plain textures. The HDR recovery is done on the GPU in a background
-  // node (see viewer.js), so the user can adjust maxDisplayBoost live without
-  // re-decoding. (The gain map is often lower-resolution; the GPU samples it
-  // with bilinear filtering, matching the spec's "scale to SDR resolution".)
+  // Decode base + gain JPEGs to ImageBitmaps, then to PixelBuffers so they go
+  // through the same unified letterbox as every other format. (The gain map is
+  // often lower-resolution; it's letterboxed independently but with the same
+  // 2:1 target, so the content region stays aligned with the base.)
   const [sdrBitmap, gainBitmap] = await Promise.all([
     createImageBitmap(new Blob([parsed.primaryImage])),
     createImageBitmap(new Blob([parsed.gainmapImage])),
@@ -165,31 +496,17 @@ async function loadUltraHDRRobust(buffer) {
   const width = sdrBitmap.width;
   const height = sdrBitmap.height;
   validateRatio(width, height);
+  const letterboxed = width / height > RATIO + 1e-3;
 
-  const sdrTexture = new Texture(sdrBitmap);
-  sdrTexture.colorSpace = SRGBColorSpace;
-  sdrTexture.wrapS = RepeatWrapping;
-  sdrTexture.wrapT = ClampToEdgeWrapping;
-  sdrTexture.minFilter = LinearFilter;
-  sdrTexture.magFilter = LinearFilter;
-  sdrTexture.generateMipmaps = false;
-  sdrTexture.flipY = true;
-  sdrTexture.needsUpdate = true;
+  const sdrPb = letterboxPixelBuffer(bitmapToPixelBuffer(sdrBitmap));
+  const gainPb = letterboxPixelBuffer(bitmapToPixelBuffer(gainBitmap));
 
-  const gainTexture = new Texture(gainBitmap);
-  // Gain map is stored non-color (it's a multiplier map), keep it linear-ish;
-  // we read raw channel values in the shader.
-  gainTexture.colorSpace = LinearSRGBColorSpace;
-  gainTexture.wrapS = RepeatWrapping;
-  gainTexture.wrapT = ClampToEdgeWrapping;
-  gainTexture.minFilter = LinearFilter;
-  gainTexture.magFilter = LinearFilter;
-  gainTexture.generateMipmaps = false;
-  gainTexture.flipY = true;
-  gainTexture.needsUpdate = true;
+  const sdrTexture = textureFromU8(sdrPb, SRGBColorSpace);
+  // Gain map is stored non-color (a multiplier map); keep it linear.
+  const gainTexture = textureFromU8(gainPb, LinearSRGBColorSpace);
 
-  // Minimap preview: the SDR base image.
-  const previewBitmap = await createImageBitmap(new Blob([parsed.primaryImage]));
+  // Minimap preview: the (letterboxed) SDR base.
+  const previewBitmap = await pixelBufferToPreview(sdrPb, null);
 
   return {
     // HDR panoramas provide the ingredients for GPU compositing instead of a
@@ -201,11 +518,11 @@ async function loadUltraHDRRobust(buffer) {
     },
     texture: null,
     format: 'Ultra HDR (JPEG + gain map)',
-    width,
-    height,
-    ratio: width / height,
+    width: sdrPb.width,
+    height: sdrPb.height,
+    ratio: sdrPb.width / sdrPb.height,
     isHDR: true,
-    letterboxed: width / height > RATIO + 1e-3,
+    letterboxed,
     previewBitmap,
     decoder: 'robust-gainmap-gpu',
   };
@@ -411,36 +728,27 @@ async function loadSDR(buffer, format) {
     );
   }
 
-  const width = bitmap.width;
-  const height = bitmap.height;
-  validateRatio(width, height);
+  validateRatio(bitmap.width, bitmap.height);
+  const letterboxed = bitmap.width / bitmap.height > RATIO + 1e-3;
 
-  const ratio = width / height;
-  const letterboxed = ratio > RATIO + 1e-3;
-
-  // If wider than 2:1, letterbox onto a 2:1 canvas (black bars top/bottom).
-  let sourceBitmap = bitmap;
-  if (letterboxed) {
-    sourceBitmap = await letterbox(bitmap);
-  }
-
-  const texture = new Texture(sourceBitmap);
+  // Decode to a PixelBuffer -> unified letterbox -> DataTexture (sRGB). Note:
+  // DataTexture doesn't carry auto-generated mipmaps, so SDR panoramas rely on
+  // bilinear filtering only (acceptable; keeps every format on one code path).
+  const pb = letterboxPixelBuffer(bitmapToPixelBuffer(bitmap));
+  const texture = textureFromU8(pb, SRGBColorSpace);
   texture.mapping = EquirectangularReflectionMapping;
-  texture.colorSpace = SRGBColorSpace;
-  texture.minFilter = LinearMipmapLinearFilter;
-  texture.magFilter = LinearFilter;
-  texture.generateMipmaps = true;
-  texture.needsUpdate = true;
+
+  const previewBitmap = await pixelBufferToPreview(pb, null);
 
   return {
     texture,
     format: prettyFormat(format),
-    width,
-    height,
-    ratio,
+    width: pb.width,
+    height: pb.height,
+    ratio: pb.width / pb.height,
     isHDR: false,
     letterboxed,
-    previewBitmap: bitmap,
+    previewBitmap,
   };
 }
 
@@ -450,21 +758,6 @@ function validateRatio(width, height) {
   if (ratio < RATIO - 1e-3) {
     throw new AspectRatioError(ratio, width, height);
   }
-}
-
-/** Draw a (too-wide) bitmap centered on a 2:1 black canvas. */
-async function letterbox(bitmap) {
-  const w = bitmap.width;
-  const targetH = Math.round(w / RATIO); // taller than source
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = targetH;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, w, targetH);
-  const y = Math.round((targetH - bitmap.height) / 2);
-  ctx.drawImage(bitmap, 0, y);
-  return createImageBitmap(canvas);
 }
 
 function prettyFormat(fmt) {

@@ -24,13 +24,13 @@
           <h1 class="dropzone__title">Panorama Viewer</h1>
           <p class="dropzone__hint">
             Drag &amp; drop an <strong>equirectangular (2:1)</strong> image file, or click to choose.<br />
-            <span class="muted">AVIF · PNG · JPG · Ultra HDR JPG</span>
+            <span class="muted">AVIF · PNG · JPG · Ultra HDR JPG · EXR · HDR</span>
           </p>
           <div class="dropzone__actions">
             <button id="pickBtn" class="btn">Choose file</button>
             <button id="demoBtn" class="btn btn--ghost">Load sample</button>
           </div>
-          <input id="fileInput" type="file" accept="image/*,.jpg,.jpeg,.png,.avif" hidden />
+          <input id="fileInput" type="file" accept="image/*,.jpg,.jpeg,.png,.avif,.exr,.hdr" hidden />
 
           <a
             class="dropzone__gh"
@@ -66,7 +66,7 @@
         </dl>
       </div>
 
-      <!-- HDR boost control (shown only for Ultra HDR images) -->
+      <!-- HDR boost control (shown for all HDR: Ultra HDR + converted EXR/HDR) -->
       <div id="hdrControl" class="panel__hdr" hidden>
         <div class="panel__hdrhead">
           <span class="panel__hdrlabel">HDR boost (maxDisplayBoost)</span>
