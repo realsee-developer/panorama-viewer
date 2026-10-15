@@ -39,7 +39,7 @@ flowchart TD
     I --> K["scene.backgroundNode: TSL gain-map compositing"]
     J --> L["scene.background = texture"]
 
-    I --> M["enableHDR: reconfigure canvas to rgba16float + display-p3 + extended"]
+    I --> M["renderer outputType: HalfFloatType -> rgba16float canvas + extended tone mapping"]
     K --> N["WebGPURenderer renders equirectangular background"]
     L --> N
     M --> N
@@ -92,14 +92,15 @@ HDR headroom is measured in **stops** (log2). Real HDR displays offer only ~1.5�
 
 ## True HDR canvas
 
-three.js configures the WebGPU canvas as an 8-bit SDR preview format by default. For HDR content we:
+We create the `WebGPURenderer` with `outputType: HalfFloatType`. Since three r171+ this makes the renderer configure the WebGPU canvas natively for HDR: the preferred canvas format becomes `rgba16float` and the context tone mapping is set to `"extended"`. Pixels above the SDR white point (`> 1.0`) then map into the display's HDR headroom instead of being clamped. For SDR content (values ≤ 1.0) it's a no-op, so the half-float canvas is used unconditionally.
 
-1. After `renderer.init()`, grab the same `GPUCanvasContext` and `configure()` it with `format: 'rgba16float'` + `colorSpace: 'display-p3'` + `toneMapping: { mode: 'extended' }` (progressive fallback to srgb / standard tone mapping if rejected).
-2. Override the backend's `getPreferredCanvasFormat()` to return `rgba16float` and nudge `setSize()` so three recreates its internal color buffer in the matching format.
+```js
+new WebGPURenderer({ canvas, antialias: true, outputType: HalfFloatType })
+```
 
-Step 2 is essential: without it, three keeps allocating its internal MSAA/color buffer as `bgra8unorm`, causing a per-frame **"resolve target format (RGBA16Float) does not match the color attachment format (BGRA8Unorm)"** error that invalidates every command buffer → black screen.
+> Earlier versions (r169) did not do this, so this project used to reconfigure the `GPUCanvasContext` manually. That hack now **conflicts** with r171+: three re-`configure()`s the context on `setSize()` and, without `outputType: HalfFloatType`, resets tone mapping to `standard` — which clamps highlights and silently kills the HDR effect. Using the native `outputType` option is the correct, conflict-free approach.
 
-Pixels above the SDR white point (`> 1.0`) then map into the display's HDR headroom via the extended tone mapping. If the browser can't configure an HDR canvas, Ultra HDR images fall back to SDR (the status badge labels this).
+If the display isn't HDR-capable, extended tone mapping simply presents the SDR range (the status badge reports the display capability).
 
 ## Minimap frustum projection
 
