@@ -53,6 +53,15 @@ body {
   height: 100%;
   touch-action: none; /* we handle gestures manually */
   cursor: grab;
+  /* Work around crbug 564770246: on Chrome + macOS a WebGPU rgba16float /
+     "extended" HDR canvas can get stuck presenting as SDR in the production
+     build. The CALayer contents headroom (UseCALayerContentsHeadroom) is left
+     at the SDR value after the first commit and only recomputed when something
+     forces the layer to be re-composited. A CSS `filter` forces the canvas
+     onto its own render surface, which makes CoreAnimation pick up the HDR
+     headroom. `blur(0)` is enough — a 0px radius does no actual blurring, so
+     there's zero visual change. Remove once the Chrome bug is fixed. */
+  filter: blur(0);
 }
 
 #view.grabbing {

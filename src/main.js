@@ -174,7 +174,10 @@ async function handleFile(file) {
   try {
     const result = await loadPanorama(file);
 
-    // Apply the panorama (SDR texture or HDR gain-map descriptor).
+    // Apply the panorama. Two input shapes:
+    //   - HDR gain-map descriptor (result.hdr): Ultra HDR JPEG, or .exr/.hdr
+    //     converted to SDR base + gain map in the loader -> GPU composite
+    //   - SDR -> a single Texture (result.texture)
     viewer.setPanorama(result.isHDR ? result.hdr : result.texture);
 
     // Try to enable true HDR output when the content is HDR *and* the display
@@ -185,7 +188,8 @@ async function handleFile(file) {
       hdrResult = viewer.enableHDR();
     }
 
-    // HDR boost control: show for Ultra HDR, hide otherwise.
+    // HDR boost control: shown for all HDR content (Ultra HDR and converted
+    // .exr/.hdr), driven by the live maxDisplayBoost. Hidden for SDR.
     setupHDRControl(result.isHDR);
 
     // Fill meta panel.
