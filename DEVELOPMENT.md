@@ -110,9 +110,10 @@ The visible region of a perspective camera is **not** a rectangle on an equirect
 
 ## Single three.js instance
 
-`three/webgpu` is a standalone bundle that includes its own copy of three.js core. Importing core classes from bare `three` **and** `WebGPURenderer` from `three/webgpu` loads two copies ("Multiple instances of Three.js" + broken `instanceof`). `vite.config.js` aliases bare `three` to the WebGPU build and sets `resolve.dedupe: ['three']` to force a single instance.
+`three/webgpu` is a standalone bundle that includes its own copy of three.js core, so mixing it with bare-`three` core imports would load two copies ("Multiple instances of Three.js" + broken `instanceof`). To keep a single instance:
 
-Since three r171 the TSL node functions (`texture`, `uniform`, `equirectUV`, `Fn`, …) live in a separate `three/tsl` entry — `viewer.js` imports the renderer from `three/webgpu` and the node functions from `three/tsl`; the alias keeps both resolving to one core.
+- Import the renderer **and** core classes from `three/webgpu`, and the TSL node functions (`texture`, `uniform`, `equirectUV`, `Fn`, …) from `three/tsl` (they moved out of `three/webgpu` in three r171+). Our code never imports bare `three`.
+- `vite.config.js` sets `resolve.dedupe: ['three']` so the bare `three` that `three/tsl` imports internally resolves to the same core.
 
 ## Build & deploy
 

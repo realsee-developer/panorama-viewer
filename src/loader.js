@@ -23,7 +23,7 @@ import {
   RepeatWrapping,
   SRGBColorSpace,
   Texture,
-} from 'three';
+} from 'three/webgpu';
 
 const RATIO = 2; // target width : height
 
