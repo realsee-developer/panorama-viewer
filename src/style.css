@@ -107,6 +107,11 @@ body {
   margin-bottom: 32px;
 }
 
+.dropzone__hint strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .muted {
   color: var(--muted);
   font-size: 13px;
