@@ -112,6 +112,8 @@ The visible region of a perspective camera is **not** a rectangle on an equirect
 
 `three/webgpu` is a standalone bundle that includes its own copy of three.js core. Importing core classes from bare `three` **and** `WebGPURenderer` from `three/webgpu` loads two copies ("Multiple instances of Three.js" + broken `instanceof`). `vite.config.js` aliases bare `three` to the WebGPU build and sets `resolve.dedupe: ['three']` to force a single instance.
 
+Since three r171 the TSL node functions (`texture`, `uniform`, `equirectUV`, `Fn`, …) live in a separate `three/tsl` entry — `viewer.js` imports the renderer from `three/webgpu` and the node functions from `three/tsl`; the alias keeps both resolving to one core.
+
 ## Build & deploy
 
 - `base: './'` (relative asset URLs) so the build works from any GitHub Pages project subpath.
