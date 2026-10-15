@@ -7,8 +7,10 @@
  */
 
 import { PerspectiveCamera, Scene, MathUtils } from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+// TSL node functions moved from `three/webgpu` to the dedicated `three/tsl`
+// entry in three r171+.
 import {
-  WebGPURenderer,
   texture as textureNode,
   uniform,
   equirectUV,
@@ -20,7 +22,7 @@ import {
   mix,
   clamp,
   Fn,
-} from 'three/webgpu';
+} from 'three/tsl';
 import { configureContextHDR } from './hdr.js';
 
 const MIN_FOV = 25;
