@@ -10,22 +10,16 @@
 
 /**
  * Detect whether the current display reports high dynamic range capability.
- * `dynamic-range: high` is the standardized CSS media feature; the older
- * non-standard `video-dynamic-range` is used as a fallback hint.
+ * Returns the live `MediaQueryList` for `(dynamic-range: high)` — read
+ * `.matches` for the current state and attach a `change` listener to react to
+ * the display gaining/losing HDR. When `matchMedia` is unavailable, returns a
+ * stub with the same shape (`matches: false`, no-op listeners).
  */
 export function detectDisplayHDR() {
   if (typeof window === 'undefined' || !window.matchMedia) {
-    return { supported: false, reason: 'matchMedia unavailable' };
+    return { matches: false, addEventListener() {}, removeEventListener() {} };
   }
-
-  const high = window.matchMedia('(dynamic-range: high)');
-  const videoHigh = window.matchMedia('(video-dynamic-range: high)');
-
-  return {
-    supported: high.matches,
-    videoHigh: videoHigh.matches,
-    mql: high,
-  };
+  return window.matchMedia('(dynamic-range: high)');
 }
 
 /**

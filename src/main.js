@@ -51,12 +51,8 @@ async function init() {
   // badge itself stays hidden until an image is loaded.
   displayHDR = detectDisplayHDR();
   renderHDRBadge();
-  if (displayHDR.mql && displayHDR.mql.addEventListener) {
-    displayHDR.mql.addEventListener('change', (e) => {
-      displayHDR.supported = e.matches;
-      renderHDRBadge();
-    });
-  }
+  // `.matches` is live, so the listener only needs to re-render the badge.
+  displayHDR.addEventListener('change', () => renderHDRBadge());
 
   viewer = new PanoramaViewer(canvas);
   await viewer.init();
@@ -251,7 +247,12 @@ function setupHDRControl(isHDR) {
   const DEFAULT_STOPS = 3; // 8×
   const contentMaxLinear = Math.max(1.01, info.hdrCapacityMaxLinear);
   const maxLinear = Math.min(Math.pow(2, MAX_STOPS), contentMaxLinear);
-  const defaultLinear = Math.min(Math.pow(2, DEFAULT_STOPS), maxLinear);
+  // On an HDR display, default to a strong-but-sane boost; on an SDR display
+  // the boost has no visible effect (highlights just clip), so start at 1×
+  // (pure SDR) — the honest initial state. The user can still drag it up.
+  const defaultLinear = displayHDR.matches
+    ? Math.min(Math.pow(2, DEFAULT_STOPS), maxLinear)
+    : 1;
 
   hdrBoost.min = '1';
   hdrBoost.max = maxLinear.toFixed(2);
@@ -300,7 +301,7 @@ function renderHDRBadge(hdrResult) {
   if (hdrResult !== undefined) status.canvas = hdrResult;
 
   // Row 1 — display capability (always known from matchMedia).
-  if (displayHDR.supported) {
+  if (displayHDR.matches) {
     statDisplay.textContent = 'Supported';
     statDisplay.className = 'hdrBadge__val ok';
   } else {

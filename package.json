@@ -3,6 +3,12 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "license": "MIT",
+  "description": "WebGPU equirectangular panorama viewer with true Ultra HDR (gain-map) rendering.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/realsee-developer/panorama-viewer.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
