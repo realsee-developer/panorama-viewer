@@ -29,17 +29,31 @@ export class Minimap {
 
     this._w = 0;
     this._h = 0;
+    this._scrub = false;
 
-    canvas.addEventListener('click', (e) => this._handleClick(e));
+    // Scrub: press and drag to continuously set the view direction. We capture
+    // the pointer so dragging keeps working even when the cursor leaves the
+    // minimap, and listen for move/up on the window as a fallback.
     canvas.addEventListener('pointerdown', (e) => {
-      // allow click-drag scrubbing
       this._scrub = true;
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore unsupported pointer */
+      }
       this._handleClick(e);
     });
-    window.addEventListener('pointerup', () => (this._scrub = false));
     canvas.addEventListener('pointermove', (e) => {
       if (this._scrub) this._handleClick(e);
     });
+    const endScrub = () => (this._scrub = false);
+    canvas.addEventListener('pointerup', endScrub);
+    canvas.addEventListener('pointercancel', endScrub);
+    // Fallback for the case where capture is unavailable: still track globally.
+    window.addEventListener('pointermove', (e) => {
+      if (this._scrub) this._handleClick(e);
+    });
+    window.addEventListener('pointerup', endScrub);
   }
 
   setImage(bitmap) {
@@ -295,8 +309,11 @@ export class Minimap {
   _handleClick(e) {
     if (!this.bitmap || !this.onPick) return;
     const rect = this.canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width; // 0..1
-    const y = (e.clientY - rect.top) / rect.height; // 0..1
+    const clamp01 = (v) => Math.min(1, Math.max(0, v));
+    // Clamp to the minimap bounds so scrubbing past an edge sticks to the
+    // edge instead of jumping to an out-of-range direction.
+    const x = clamp01((e.clientX - rect.left) / rect.width);
+    const y = clamp01((e.clientY - rect.top) / rect.height);
     const lon = x * 360 - 180;
     const lat = 90 - y * 180;
     this.onPick(lon, lat);
