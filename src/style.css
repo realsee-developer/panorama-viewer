@@ -152,6 +152,21 @@ body {
   border-color: var(--fg);
 }
 
+/* GitHub source link in the dropzone corner */
+.dropzone__gh {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: inline-flex;
+  color: var(--muted);
+  transition: color 0.15s ease, transform 0.12s ease;
+}
+
+.dropzone__gh:hover {
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
 /* ---------- Info / Minimap panel (top-left) ---------- */
 .panel {
   position: fixed;
