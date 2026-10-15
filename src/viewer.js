@@ -6,7 +6,13 @@
  * origin; dragging rotates the view (yaw/pitch), wheel / pinch changes FOV.
  */
 
-import { PerspectiveCamera, Scene, MathUtils, WebGPURenderer } from 'three/webgpu';
+import {
+  PerspectiveCamera,
+  Scene,
+  MathUtils,
+  HalfFloatType,
+  WebGPURenderer,
+} from 'three/webgpu';
 // TSL node functions live in the dedicated `three/tsl` entry (three r171+).
 import {
   texture as textureNode,
@@ -22,7 +28,6 @@ import {
   clamp,
   Fn,
 } from 'three/tsl';
-import { configureContextHDR } from './hdr.js';
 
 const MIN_FOV = 25;
 const MAX_FOV = 100;
@@ -71,10 +76,17 @@ export class PanoramaViewer {
       );
     }
 
+    // Render to a half-float (rgba16float) canvas. three.js r171+ natively
+    // configures the WebGPU context for HDR when outputType is HalfFloatType:
+    // the preferred canvas format becomes rgba16float and the context tone
+    // mapping is set to "extended", so values above SDR white (> 1.0) map into
+    // the display's HDR headroom. For SDR content (values <= 1.0) this is a
+    // no-op, so it's safe to always use it.
     this.renderer = new WebGPURenderer({
       canvas: this.canvas,
       antialias: true,
       alpha: false,
+      outputType: HalfFloatType,
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(
@@ -94,63 +106,18 @@ export class PanoramaViewer {
   }
 
   /**
-   * Attempt to switch the WebGPU canvas to HDR output. Must be called after
-   * init() (context exists). Returns the HDR config result.
-   *
-   * Reconfiguring the swapchain to rgba16float is not enough on its own:
-   * three.js's WebGPU backend allocates its internal color buffer and picks
-   * its render-pass color format from `utils.getPreferredCanvasFormat()`,
-   * which returns the 8-bit preferred format (e.g. bgra8unorm). That causes a
-   * format mismatch at MSAA-resolve / present time ("resolve target format
-   * (RGBA16Float) does not match the color attachment format (BGRA8Unorm)"),
-   * invalidating every frame's command buffer -> black screen.
-   *
-   * So we also override `getPreferredCanvasFormat` to report rgba16float and
-   * force the backend to rebuild its framebuffer textures.
+   * Report the HDR canvas status. With the renderer created as HalfFloatType,
+   * three configures the context as rgba16float + extended tone mapping
+   * natively, so there's nothing to reconfigure here — we just surface the
+   * state for the UI badge.
    */
   enableHDR() {
-    try {
-      const backend = this.renderer.backend;
-      const context = backend?.context;
-      const device = backend?.device;
-      const utils = backend?.utils;
-      if (!context || !device || !utils) {
-        return { ok: false, error: 'WebGPU context not ready' };
-      }
-
-      const result = configureContextHDR(context, device, false);
-      if (!result.ok) {
-        this._hdrActive = false;
-        return result;
-      }
-
-      // Make three.js render its internal buffers in the same HDR format as
-      // the reconfigured swapchain.
-      if (!this._origGetPreferredCanvasFormat) {
-        this._origGetPreferredCanvasFormat =
-          utils.getPreferredCanvasFormat.bind(utils);
-      }
-      utils.getPreferredCanvasFormat = () => 'rgba16float';
-
-      // Force the backend to recreate its color/depth framebuffer textures
-      // with the new format. Nudging the size triggers reallocation.
-      this._forceFramebufferRebuild();
-
-      this._hdrActive = true;
-      return result;
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }
-
-  /** Force three's WebGPU backend to rebuild framebuffer textures. */
-  _forceFramebufferRebuild() {
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
-    // Toggle size so the backend's cached framebuffer is invalidated and
-    // recreated with the (now HDR) preferred canvas format.
-    this.renderer.setSize(Math.max(1, w - 1), Math.max(1, h - 1), false);
-    this.renderer.setSize(w, h, false);
+    const fmt = this.renderer?.backend?.utils?.getPreferredCanvasFormat?.();
+    const ok = fmt === 'rgba16float';
+    this._hdrActive = ok;
+    return ok
+      ? { ok: true, format: 'rgba16float', colorSpace: 'srgb', toneMapping: 'extended' }
+      : { ok: false, error: 'HDR canvas not available' };
   }
 
   /**
