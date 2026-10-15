@@ -6,10 +6,8 @@
  * origin; dragging rotates the view (yaw/pitch), wheel / pinch changes FOV.
  */
 
-import { PerspectiveCamera, Scene, MathUtils } from 'three';
-import { WebGPURenderer } from 'three/webgpu';
-// TSL node functions moved from `three/webgpu` to the dedicated `three/tsl`
-// entry in three r171+.
+import { PerspectiveCamera, Scene, MathUtils, WebGPURenderer } from 'three/webgpu';
+// TSL node functions live in the dedicated `three/tsl` entry (three r171+).
 import {
   texture as textureNode,
   uniform,
