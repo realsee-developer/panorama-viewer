@@ -164,12 +164,11 @@ body {
   right: 16px;
   display: inline-flex;
   color: var(--muted);
-  transition: color 0.15s ease, transform 0.12s ease;
+  transition: color 0.15s ease;
 }
 
 .dropzone__gh:hover {
   color: var(--accent);
-  transform: translateY(-1px);
 }
 
 /* ---------- Info / Minimap panel (top-left) ---------- */
