@@ -330,14 +330,18 @@ async function loadFloatHDR(buffer, format) {
  * SDR base + gain map, returning ready-to-render DataTextures plus the
  * gain-map metadata expected by the viewer's `_setHDRPanorama`.
  *
- * Port of @realsee/hdr-toolbox `linearHdrToUltraHdr` (convert.ts), minus the
- * JPEG round-trip: we build the SDR as 8-bit sRGB codes and derive the gain
- * map from those quantized codes (so recovery stays consistent), but keep the
- * data as GPU textures instead of encoding to JPEG.
+ * Based on @realsee/hdr-toolbox `linearHdrToUltraHdr` (convert.ts), minus the
+ * JPEG round-trip: we build the SDR base as 8-bit sRGB codes and derive the
+ * gain map from those quantized codes (so recovery stays consistent), but keep
+ * the data as GPU textures instead of encoding to JPEG.
  *
- *   y      = luminance(rgb);  ySdr = y/(1+y)             (Reinhard by luma)
- *   scale  = ySdr / y                                     (chroma-preserving)
- *   code   = round(linearToSrgb(min(1, hdr*scale)) * 255) (8-bit SDR)
+ * SDR base tone mapping uses AgX (ported from three.js via the toolbox), a
+ * gentle filmic curve with a neutral highlight roll-off — a clear upgrade over
+ * the old luminance-Reinhard (less hue shift, better highlight detail) at the
+ * same per-pixel cost. An automatic middle-grey exposure keeps bright scenes
+ * from washing out. The gain map is then derived from the quantized AgX base:
+ *
+ *   code   = agxSdr(hdr * autoExposure)                   (8-bit sRGB)
  *   ratio  = (hdr + offset) / (srgbToLinear(code) + offset)
  *   gain   = round(min(1, log2(max(1,ratio)) / log2(maxContentBoost)) * 255)
  *
@@ -352,8 +356,12 @@ async function hdrToGainMap(pb) {
   const toLin = (hf) => DataUtils.fromHalfFloat(hf);
   const OFFSET = 1 / 64; // 0.015625, matches convert.ts
 
-  // Peak linear value -> content boost headroom (clamped to 2^14 like toolbox).
+  // Single pass over all pixels to collect:
+  //   - peak linear value -> content boost headroom (clamped to 2^14)
+  //   - sum of log-luminance -> geometric-mean luminance for AgX auto exposure
   let peak = 1;
+  let logSum = 0;
+  let logCount = 0;
   for (let i = 0; i < w * h; i++) {
     const o = i * 4;
     const r = toLin(src[o]);
@@ -362,33 +370,37 @@ async function hdrToGainMap(pb) {
     if (r > peak) peak = r;
     if (g > peak) peak = g;
     if (b > peak) peak = b;
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (y > 0) {
+      logSum += Math.log(y + 1e-4);
+      logCount++;
+    }
   }
   const maxContentBoost = Math.max(1.0001, Math.min(peak, Math.pow(2, 14)));
   const logMax = Math.log2(maxContentBoost);
+
+  // AgX auto exposure: map geometric-mean luminance to middle grey (~0.18).
+  const geoMean = logCount > 0 ? Math.exp(logSum / logCount) : 1;
+  const exposure = 0.18 / Math.max(1e-4, geoMean);
 
   // Output buffers: RGBA8 for both (alpha = 255). SDR holds sRGB codes; gain
   // holds normalized log-ratio codes.
   const sdrData = new Uint8Array(w * h * 4);
   const gainData = new Uint8Array(w * h * 4);
 
+  const agxOut = [0, 0, 0];
   for (let i = 0; i < w * h; i++) {
     const o = i * 4;
     const r = Math.max(0, toLin(src[o]));
     const g = Math.max(0, toLin(src[o + 1]));
     const b = Math.max(0, toLin(src[o + 2]));
 
-    // Reinhard driven by luminance; scale chroma by the same factor so hue /
-    // saturation survive tone mapping.
-    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    const ySdr = y / (1 + y);
-    const scale = y > 1e-6 ? ySdr / y : 0;
+    // AgX tone map -> display sRGB in [0,1] per channel.
+    agxToneMap(r * exposure, g * exposure, b * exposure, agxOut);
 
-    const rgb = [r, g, b];
     for (let c = 0; c < 3; c++) {
-      const hdr = rgb[c];
-      const code = Math.round(
-        linearToSrgb(Math.min(1, hdr * scale)) * 255
-      );
+      const hdr = c === 0 ? r : c === 1 ? g : b;
+      const code = Math.round(clamp01(agxOut[c]) * 255);
       sdrData[o + c] = code;
 
       const sdrLinear = srgbToLinear(code / 255);
@@ -437,6 +449,90 @@ function srgbToLinear(v) {
 function linearToSrgb(v) {
   const c = v < 0 ? 0 : v > 1 ? 1 : v;
   return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+
+/* ---------- AgX tone map (ported from three.js via @realsee/hdr-toolbox) ----
+ *
+ * AgX is a filmic curve with a gentle, neutral highlight roll-off and little
+ * hue shift. Pipeline per pixel: sRGB->Rec.2020, AgX inset, log2 encode over
+ * [MIN_EV, MAX_EV], sigmoid contrast polynomial, AgX outset, ^2.2, back to
+ * sRGB primaries, then the sRGB OETF. Matrices are column-major (three.js
+ * mat3 convention).
+ */
+const AGX_SRGB_TO_REC2020 = [
+  [0.6274, 0.0691, 0.0164],
+  [0.3293, 0.9195, 0.088],
+  [0.0433, 0.0113, 0.8956],
+];
+const AGX_REC2020_TO_SRGB = [
+  [1.6605, -0.1246, -0.0182],
+  [-0.5876, 1.1329, -0.1006],
+  [-0.0728, -0.0083, 1.1187],
+];
+const AGX_INSET = [
+  [0.856627153315983, 0.137318972929847, 0.11189821299995],
+  [0.0951212405381588, 0.761241990602591, 0.0767994186031903],
+  [0.0482516061458583, 0.101439036467562, 0.811302368396859],
+];
+const AGX_OUTSET = [
+  [1.1271005818144368, -0.1413297634984383, -0.14132976349843826],
+  [-0.11060664309660323, 1.157823702216272, -0.11060664309660294],
+  [-0.016493938717834573, -0.016493938717834257, 1.2519364065950405],
+];
+const AGX_MIN_EV = -12.47393;
+const AGX_MAX_EV = 4.026069;
+
+/** Column-major 3x3 matrix × vec3, writing into `out`. */
+function mul3(m, x, y, z, out) {
+  out[0] = m[0][0] * x + m[1][0] * y + m[2][0] * z;
+  out[1] = m[0][1] * x + m[1][1] * y + m[2][1] * z;
+  out[2] = m[0][2] * x + m[1][2] * y + m[2][2] * z;
+}
+
+/** AgX sigmoid contrast polynomial (one channel), as in three.js. */
+function agxContrast(x) {
+  const x2 = x * x;
+  const x4 = x2 * x2;
+  return (
+    15.5 * x4 * x2 -
+    40.14 * x4 * x +
+    31.96 * x4 -
+    6.868 * x2 * x +
+    0.4298 * x2 +
+    0.1191 * x -
+    0.00232
+  );
+}
+
+/**
+ * AgX tone map a single linear RGB triple (already exposure-scaled) to display
+ * sRGB values in [0,1], written into `out` (length-3 scratch array).
+ */
+function agxToneMap(r, g, b, out) {
+  const t = out; // reuse as scratch
+  mul3(AGX_SRGB_TO_REC2020, Math.max(0, r), Math.max(0, g), Math.max(0, b), t);
+  mul3(AGX_INSET, t[0], t[1], t[2], t);
+  // log2 encode over the AgX EV range.
+  const span = AGX_MAX_EV - AGX_MIN_EV;
+  let c0 = (Math.log2(Math.max(t[0], 1e-10)) - AGX_MIN_EV) / span;
+  let c1 = (Math.log2(Math.max(t[1], 1e-10)) - AGX_MIN_EV) / span;
+  let c2 = (Math.log2(Math.max(t[2], 1e-10)) - AGX_MIN_EV) / span;
+  c0 = agxContrast(clamp01(c0));
+  c1 = agxContrast(clamp01(c1));
+  c2 = agxContrast(clamp01(c2));
+  mul3(AGX_OUTSET, c0, c1, c2, t);
+  // ^2.2, then Rec.2020 -> sRGB primaries.
+  mul3(
+    AGX_REC2020_TO_SRGB,
+    Math.pow(Math.max(0, t[0]), 2.2),
+    Math.pow(Math.max(0, t[1]), 2.2),
+    Math.pow(Math.max(0, t[2]), 2.2),
+    t
+  );
+  // Now linear sRGB; apply the sRGB OETF.
+  out[0] = linearToSrgb(t[0]);
+  out[1] = linearToSrgb(t[1]);
+  out[2] = linearToSrgb(t[2]);
 }
 
 /* ---------- Ultra HDR path ----------
