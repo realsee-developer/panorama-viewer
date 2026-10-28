@@ -34,6 +34,15 @@ npm run preview  # 预览构建产物
 
 架构设计、Ultra HDR 增益图解码流程、WebGPU HDR 画布配置、小地图视锥投影等技术细节见 **[DEVELOPMENT.md](./DEVELOPMENT.md)**（含流程图）。
 
+## 技术文章
+
+- [从 Ultra HDR 到 Space HDR](https://www.realsee.ai/zh/blogs/dev/realsee-ultra-hdr-to-space-hdr?utm_source=github&utm_medium=referral&utm_campaign=dev_blogs_webgpu_space_hdr_202610&utm_content=panorama_viewer_readme_zh)：基础图、增益图和恢复参数如何跟随全景采样、高清细节加载与点位切换，附实景体验和 HDR 能力检测。
+- [Realsee 以 WebGPU 全面重写空间渲染器](https://www.realsee.ai/zh/blogs/dev/webgpu-spatial-rendering-engineering?utm_source=github&utm_medium=referral&utm_campaign=dev_blogs_webgpu_space_hdr_202610&utm_content=panorama_viewer_readme_zh)：围绕极致 3D 体验，介绍材质、视口细节加载、颜色处理、资源生命周期与图像输出。
+
+本仓库提供公开的全景查看能力；Space HDR 文章介绍从采集到呈现的完整链路和空间漫游。进入示例的第一幅全景，查看 **24K HDR** 标识；没有标识时，可使用文章中的检测工具检查浏览器与显示环境。
+
+[讨论 HDR 集成](https://github.com/realsee-developer/panorama-viewer/discussions/1?utm_source=github&utm_medium=referral&utm_campaign=dev_blogs_webgpu_space_hdr_202610&utm_content=readme_hdr_discussion_zh)。
+
 ## 协议
 
 [MIT](./LICENSE)
