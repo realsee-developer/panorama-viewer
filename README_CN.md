@@ -43,6 +43,6 @@ npm run preview  # 预览构建产物
 
 [讨论 HDR 集成](https://github.com/realsee-developer/panorama-viewer/discussions/1?utm_source=github&utm_medium=referral&utm_campaign=dev_blogs_webgpu_space_hdr_202610&utm_content=readme_hdr_discussion_zh)。
 
-## 协议
+## 当前代码许可
 
-[MIT](./LICENSE)
+本项目明确标示的原创代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，标准标识为 `PolyForm-Noncommercial-1.0.0`。具体允许用途、修改与分发条件以许可原文为准；它不是 OSI 认可的开源许可。SDK、第三方组件和素材继续遵守各自协议。历史版本的原有授权不会因本次变更或 Git 提交整理而撤销。

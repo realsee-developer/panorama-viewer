@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "WebGPU equirectangular panorama viewer with true Ultra HDR (gain-map) rendering.",
   "repository": {
     "type": "git",

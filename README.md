@@ -43,6 +43,6 @@ This viewer provides the public panorama-viewing capability. The Space HDR artic
 
 [Discuss HDR integration](https://github.com/realsee-developer/panorama-viewer/discussions/1?utm_source=github&utm_medium=referral&utm_campaign=dev_blogs_webgpu_space_hdr_202610&utm_content=readme_hdr_discussion_en).
 
-## License
+## Current code license
 
-[MIT](./LICENSE)
+The identified Realsee-authored code is available under [PolyForm Noncommercial License 1.0.0](LICENSE), SPDX `PolyForm-Noncommercial-1.0.0`. The unmodified license governs permitted purposes, modification and distribution. This is source-available licensing, not an OSI-approved open source license. SDKs, third-party components and assets retain their separate terms. Earlier licensed copies retain their applicable rights, irrespective of this license change or Git history consolidation.
