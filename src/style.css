@@ -267,6 +267,7 @@ body {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--accent);
+  white-space: nowrap;
 }
 
 .panel__hdrscale {
