@@ -229,6 +229,13 @@ async function handleFile(file) {
 // ---------- HDR boost control ----------
 let hdrBoostBound = false;
 
+// maxDisplayBoost is a linear multiple of SDR white, as in five-webgpu.
+// Default 3× is about 609 nit at 203 nit SDR white (BT.2408), close to the
+// HDR600 peak of 600 nit.
+const SDR_WHITE_NITS = 203;
+const DEFAULT_MAX_DISPLAY_BOOST = 3;
+const SLIDER_MAX_DISPLAY_BOOST = 20;
+
 function setupHDRControl(isHDR) {
   if (!isHDR) {
     hdrControl.hidden = true;
@@ -240,29 +247,20 @@ function setupHDRControl(isHDR) {
     return;
   }
 
-  // Slider range reflects realistic *display* HDR headroom, not the content's
-  // raw capacity. HDR headroom is measured in stops (log2):
-  //   SDR = 0 stops (1×), typical HDR displays ≈ 1.5–3 stops (≈3–8×),
-  //   a great HDR display (e.g. modern MacBook Pro) ≈ 4 stops (16×).
-  // So we cap the slider at 4 stops (16×) regardless of the (often huge)
-  // HDRCapacityMax the file declares, and default to a strong-but-sane 3 stops
-  // (8×). The slider never exceeds the content's own capacity either.
-  const MAX_STOPS = 4; // 16×
-  const DEFAULT_STOPS = 3; // 8×
+  // The slider never exceeds the content's own HDR capacity.
   const contentMaxLinear = Math.max(1.01, info.hdrCapacityMaxLinear);
-  const maxLinear = Math.min(Math.pow(2, MAX_STOPS), contentMaxLinear);
-  // On an HDR display, default to a strong-but-sane boost; on an SDR display
-  // the boost has no visible effect (highlights just clip), so start at 1×
-  // (pure SDR) — the honest initial state. The user can still drag it up.
+  const maxLinear = Math.min(SLIDER_MAX_DISPLAY_BOOST, contentMaxLinear);
+  // On an SDR display the boost has no visible effect (highlights just clip),
+  // so start at 1× (pure SDR), the honest initial state.
   const defaultLinear = displayHDR.matches
-    ? Math.min(Math.pow(2, DEFAULT_STOPS), maxLinear)
+    ? Math.min(DEFAULT_MAX_DISPLAY_BOOST, maxLinear)
     : 1;
 
   hdrBoost.min = '1';
   hdrBoost.max = maxLinear.toFixed(2);
   hdrBoost.step = Math.max(0.01, (maxLinear - 1) / 200).toFixed(3);
   hdrBoost.value = defaultLinear.toFixed(2);
-  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (${MAX_STOPS} stops)`;
+  hdrBoostMax.textContent = `${maxLinear.toFixed(1)}× (${Math.round(maxLinear * SDR_WHITE_NITS)} nit)`;
   updateBoostLabel(defaultLinear);
 
   // Apply the initial boost.
@@ -281,7 +279,7 @@ function setupHDRControl(isHDR) {
 }
 
 function updateBoostLabel(linear) {
-  hdrBoostVal.textContent = `${linear.toFixed(2)}×`;
+  hdrBoostVal.textContent = `${linear.toFixed(2)}× (${Math.round(linear * SDR_WHITE_NITS)} nit)`;
 }
 
 /**
