@@ -130,12 +130,16 @@ export class AspectRatioError extends Error {
  * paths.
  *
  *   PixelBuffer = {
- *     data: Uint8ClampedArray | Uint16Array,  // RGBA, row-major, top-origin
+ *     data: Uint8ClampedArray | Uint16Array,  // RGBA, row-major
  *     width, height,
  *     kind: 'u8' | 'half',                     // 8-bit sRGB codes vs half-float
- *     flipY: boolean,                          // flip vertically on GPU upload
- *                                              // (texture.flipY); it also tells
- *                                              // the preview to read bottom-up
+ *     flipY: boolean,                          // row order, and the GPU upload flag
+ *                                              // (texture.flipY):
+ *                                              //   true  = rows run top-to-bottom,
+ *                                              //           the GPU flips them on upload
+ *                                              //   false = rows already run
+ *                                              //           bottom-to-top (OpenEXR)
+ *                                              // The minimap thumbnail reads rows to match.
  *   }
  *
  * Flow per format:
@@ -244,7 +248,10 @@ async function pixelBufferToPreview(pb, tone) {
 
   for (let y = 0; y < outH; y++) {
     const sy = Math.min(pb.height - 1, Math.floor((y / outH) * pb.height));
-    const readY = pb.flipY ? pb.height - 1 - sy : sy;
+    // `flipY: true` means the rows are stored top-to-bottom (the GPU flips them
+    // on upload), so read them as they are. `flipY: false` means they are already
+    // stored bottom-to-top (OpenEXR), so the top of the thumbnail is the last row.
+    const readY = pb.flipY ? sy : pb.height - 1 - sy;
     for (let x = 0; x < outW; x++) {
       const sx = Math.min(pb.width - 1, Math.floor((x / outW) * pb.width));
       const si = (readY * pb.width + sx) * 4;
