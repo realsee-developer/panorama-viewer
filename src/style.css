@@ -113,6 +113,20 @@ body {
   margin-bottom: 28px;
 }
 
+/* Pitch under the title: what the viewer is for. Emphasis is weight only, so
+   the accent colour stays on the drag-and-drop hint below. */
+.dropzone__lead {
+  font-size: 16px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: var(--fg);
+  margin-bottom: 16px;
+}
+
+.dropzone__lead strong {
+  font-weight: 700;
+}
+
 .dropzone__hint {
   font-size: 15px;
   line-height: 1.7;
@@ -591,6 +605,37 @@ body {
   }
 }
 
+/* Medium-short viewports (small laptops, small phones): keep the whole empty
+   state, including the buttons, in view by trimming padding and spacing. */
+@media (max-height: 760px) {
+  .dropzone__inner {
+    padding-top: clamp(16px, 4vh, 40px);
+    padding-bottom: clamp(16px, 4vh, 40px);
+  }
+
+  .dropzone__title {
+    margin-bottom: 14px;
+  }
+
+  .dropzone__lead {
+    font-size: 15px;
+    margin-bottom: 10px;
+  }
+
+  .dropzone__hint {
+    line-height: 1.55;
+    margin-bottom: 12px;
+  }
+
+  .dropzone__formats {
+    margin-bottom: 20px;
+  }
+
+  .dropzone__formats li {
+    padding: 5px 0;
+  }
+}
+
 /* Short viewports (landscape phones): tighten the empty state so the title,
    format list and buttons all fit without scrolling. */
 @media (max-height: 500px) {
@@ -601,6 +646,12 @@ body {
   .dropzone__title {
     font-size: clamp(28px, 6vw, 40px);
     margin-bottom: 14px;
+  }
+
+  .dropzone__lead {
+    font-size: 14px;
+    line-height: 1.4;
+    margin-bottom: 8px;
   }
 
   .dropzone__hint {
