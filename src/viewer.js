@@ -18,8 +18,7 @@ import {
   texture as textureNode,
   uniform,
   equirectUV,
-  normalWorld,
-  vec2,
+  normalWorldGeometry,
   vec3,
   vec4,
   float,
@@ -173,12 +172,13 @@ export class PanoramaViewer {
     const hdrCapMax = float(m.hdrCapacityMax);
 
     const node = Fn(() => {
-      // equirectUV(normalWorld) maps the ray direction to equirectangular UV.
-      // We sample the textures with this explicit UV, so the textures' own
-      // `flipY` flag does NOT apply here — flip V ourselves so the HDR
-      // orientation matches the SDR (`scene.background`) path.
-      const baseUV = equirectUV(normalWorld);
-      const uv = vec2(baseUV.x, float(1.0).sub(baseUV.y));
+      // The background is drawn on a BackSide sphere. Use the raw geometry
+      // normal, as three.js's own background does. `normalWorld` is flipped by
+      // the face direction for BackSide, so it points at the sphere's centre
+      // (the opposite of the view ray): the panorama came out rotated 180°
+      // horizontally and upside down, and a `1 - v` flip used to hide only the
+      // second symptom.
+      const uv = equirectUV(normalWorldGeometry);
       // In TSL, texture(tex, uv) performs the sample; the SDR texture is tagged
       // sRGB so three returns it already linearized.
       const sdrLinear = textureNode(sdrTexture, uv).rgb;
