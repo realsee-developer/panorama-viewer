@@ -76,6 +76,10 @@ export class Minimap {
   _resizeBacking() {
     // Match backing store to displayed size * DPR for crispness.
     const rect = this.canvas.getBoundingClientRect();
+    // Hidden (e.g. the panel is collapsed): the canvas has no layout size, and
+    // resizing now would shrink the backing store to a few pixels. Keep the
+    // current one; resize() runs again when the canvas is shown.
+    if (rect.width === 0) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this._w = Math.max(2, Math.round(rect.width));
     this._h = Math.max(1, Math.round(rect.width / 2)); // enforce 2:1
@@ -86,6 +90,8 @@ export class Minimap {
 
   draw() {
     if (!this.bitmap || !this._w) return;
+    // Nothing to paint while hidden; `update` runs every frame.
+    if (!this.canvas.offsetParent) return;
     const ctx = this.ctx;
     const W = this._w;
     const H = this._h;

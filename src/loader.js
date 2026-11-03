@@ -33,8 +33,14 @@ import {
   RepeatWrapping,
   SRGBColorSpace,
 } from 'three/webgpu';
-import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
-import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
+import {
+  inspectAVIF,
+  decodeAVIFItem,
+  parseTmapMetadata,
+  itemBitDepth,
+  itemColorInfo,
+} from './avif.js';
+import { hdrCodesToLinearHalf, isHDRTransfer } from './color.js';
 
 const RATIO = 2; // target width : height
 
@@ -93,6 +99,14 @@ function latin1(u8, limit) {
     );
   }
   return s;
+}
+
+/** A valid AVIF that uses a feature the WASM path can't render (shown as SDR). */
+class UnsupportedAVIFError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'UnsupportedAVIFError';
+  }
 }
 
 export class AspectRatioError extends Error {
@@ -157,6 +171,9 @@ export async function loadPanorama(file) {
   }
   if (format === 'jpeg' && isUltraHDR(buffer)) {
     return loadUltraHDR(buffer);
+  }
+  if (format === 'avif') {
+    return loadAVIF(buffer);
   }
   return loadSDR(buffer, format);
 }
@@ -276,10 +293,13 @@ function bitmapToPixelBuffer(bitmap) {
  * same gain-map path as Ultra HDR JPEGs.
  */
 async function loadFloatHDR(buffer, format) {
+  // Loaded on demand: only .exr / .hdr files need these decoders, so everyone
+  // else doesn't download them (EXRLoader alone is ~70 kB unminified).
   const loader =
     format === 'exr'
-      ? new EXRLoader().setDataType(HalfFloatType)
-      : new HDRLoader().setDataType(HalfFloatType);
+      ? new (await import('three/examples/jsm/loaders/EXRLoader.js')).EXRLoader()
+      : new (await import('three/examples/jsm/loaders/HDRLoader.js')).HDRLoader();
+  loader.setDataType(HalfFloatType);
 
   // Both loaders extend DataTextureLoader; createDataTexture(buffer) parses an
   // in-memory ArrayBuffer and returns a fully configured DataTexture.
@@ -314,7 +334,7 @@ async function loadFloatHDR(buffer, format) {
   return {
     hdr: { sdrTexture, gainTexture, gainMeta },
     texture: null,
-    format: format === 'exr' ? 'OpenEXR → gain map' : 'Radiance HDR → gain map',
+    format: format === 'exr' ? 'OpenEXR' : 'Radiance HDR',
     width: pb.width,
     height: pb.height,
     ratio: pb.width / pb.height,
@@ -346,8 +366,14 @@ async function loadFloatHDR(buffer, format) {
  *   gain   = round(min(1, log2(max(1,ratio)) / log2(maxContentBoost)) * 255)
  *
  * @param {{data:Uint16Array,width,height,kind:'half',flipY}} pb half-float PixelBuffer
+ * @param {{autoExposure?: boolean}} [opts]
+ *        autoExposure (default true) scales the image so its geometric-mean
+ *        luminance is middle grey. That suits scene-referred sources (.exr /
+ *        .hdr) whose absolute scale is arbitrary. Display-referred sources
+ *        (PQ / HLG AVIF) already define SDR white = 1.0, so they pass false:
+ *        auto-exposing them would darken bright scenes.
  */
-async function hdrToGainMap(pb) {
+async function hdrToGainMap(pb, { autoExposure = true } = {}) {
   const w = pb.width;
   const h = pb.height;
   const src = pb.data; // Uint16Array half-float, RGBA
@@ -381,7 +407,7 @@ async function hdrToGainMap(pb) {
 
   // AgX auto exposure: map geometric-mean luminance to middle grey (~0.18).
   const geoMean = logCount > 0 ? Math.exp(logSum / logCount) : 1;
-  const exposure = 0.18 / Math.max(1e-4, geoMean);
+  const exposure = autoExposure ? 0.18 / Math.max(1e-4, geoMean) : 1;
 
   // Output buffers: RGBA8 for both (alpha = 255). SDR holds sRGB codes; gain
   // holds normalized log-ratio codes.
@@ -809,6 +835,184 @@ function parseGainMapMetadata(xmpPackets) {
     hdrCapacityMin: num('HDRCapacityMin', 0.0), // log2 space
     hdrCapacityMax: num('HDRCapacityMax', 1.0), // log2 space
     baseRenditionIsHDR: bool('BaseRenditionIsHDR'),
+  };
+}
+
+/* ---------- AVIF path (10-bit HDR / gain map; SDR via the browser) ----------
+ *
+ * The browser's createImageBitmap decodes every AVIF structure (grid, rotation,
+ * alpha, ...) but only ever gives an 8-bit SDR rendition: it discards the extra
+ * bit depth of 10/12-bit HDR and ignores an embedded ISO 21496-1 gain map. So:
+ *
+ *   - plain / 8-bit SDR AVIF -> the browser decoder (loadSDR), as for JPG/PNG.
+ *   - gain map present -> libavif-wasm (@jsquash/avif) decodes the base and
+ *     gain-map items, avif.js parses the tmap metadata, and the existing GPU
+ *     gain-map compositor renders them (boost stays live).
+ *   - 10/12-bit PQ/HLG -> libavif-wasm decodes code values, color.js converts
+ *     them to linear sRGB half-float, then hdrToGainMap builds base + gain map.
+ *
+ * The WASM path only understands plain `av01` image items. HDR files built from
+ * `grid` (tiled) items, or any WASM decode failure, fall back to the browser's
+ * SDR rendition, labelled in the format field so the downgrade is visible.
+ */
+async function loadAVIF(buffer) {
+  let info = null;
+  try {
+    info = inspectAVIF(buffer);
+  } catch {
+    // Unparseable container: let the browser have a go.
+  }
+  if (!info || !info.meta) return loadSDR(buffer, 'avif');
+
+  const { meta } = info;
+  const view = new DataView(buffer);
+  const typeOf = (id) => meta.items.get(id)?.type;
+
+  const sdrFallback = async (reason, err) => {
+    console.warn(`AVIF: ${reason}; showing the SDR rendition.`, err ?? '');
+    const sdr = await loadSDR(buffer, 'avif');
+    sdr.format = 'AVIF (SDR fallback)';
+    return sdr;
+  };
+
+  if (info.kind === 'gainmap') {
+    if (typeOf(info.baseItemId) !== 'av01' || typeOf(info.gainItemId) !== 'av01') {
+      return sdrFallback('gain map with tiled/derived images is not supported');
+    }
+    try {
+      return await loadAVIFGainMap(buffer, info);
+    } catch (e) {
+      if (e instanceof AspectRatioError) throw e;
+      if (e instanceof UnsupportedAVIFError) return sdrFallback(e.message);
+      return sdrFallback('gain map decode failed', e);
+    }
+  }
+
+  const primaryId = meta.primaryItem;
+  if (primaryId == null || !meta.items.has(primaryId)) return loadSDR(buffer, 'avif');
+
+  // For a grid, depth/colour live on the grid item and/or its first tile. A
+  // truncated or corrupt property box throws; treat that like any unreadable
+  // container and let the browser decoder have a go.
+  let depth;
+  let color;
+  try {
+    const probe = [primaryId, ...(meta.dimg.get(primaryId) ?? []).slice(0, 1)];
+    depth = Math.max(...probe.map((id) => itemBitDepth(view, meta, id)));
+    color = probe.map((id) => itemColorInfo(view, meta, id)).find(Boolean) ?? null;
+  } catch {
+    return loadSDR(buffer, 'avif');
+  }
+  const isHDR = depth > 8 && color && isHDRTransfer(color.transfer);
+
+  if (!isHDR) return loadSDR(buffer, 'avif');
+  if (typeOf(primaryId) !== 'av01') {
+    return sdrFallback('HDR with tiled/derived images is not supported');
+  }
+  try {
+    return await loadAVIFHDR(buffer, view, meta, primaryId, depth, color);
+  } catch (e) {
+    if (e instanceof AspectRatioError) throw e;
+    return sdrFallback('HDR decode failed', e);
+  }
+}
+
+/** 10/12-bit PQ or HLG AVIF -> linear half-float -> SDR base + gain map. */
+async function loadAVIFHDR(buffer, view, meta, primaryId, depth, color) {
+  const decoded = await decodeAVIFItem(view, meta, primaryId, buffer, { depth });
+  validateRatio(decoded.width, decoded.height);
+  const letterboxed = decoded.width / decoded.height > RATIO + 1e-3;
+
+  // Code values -> linear sRGB half-float -> unified letterbox. The decoder
+  // yields top-origin rows (like createImageBitmap), so flipY:true matches the
+  // SDR and gain-map AVIF upload orientation.
+  let pb = hdrCodesToLinearHalf(decoded, color, (h) => DataUtils.toHalfFloat(h), true);
+  pb = letterboxPixelBuffer(pb);
+
+  // PQ / HLG are display-referred (SDR white = 1.0), so no auto-exposure.
+  const { sdrTexture, gainTexture, gainMeta, previewBitmap } = await hdrToGainMap(pb, {
+    autoExposure: false,
+  });
+  return {
+    hdr: { sdrTexture, gainTexture, gainMeta },
+    texture: null,
+    format: `AVIF ${depth}-bit HDR (${color.transfer === 16 ? 'PQ' : 'HLG'})`,
+    width: pb.width,
+    height: pb.height,
+    ratio: pb.width / pb.height,
+    isHDR: true,
+    hdrKind: 'gainmap',
+    letterboxed,
+    previewBitmap,
+  };
+}
+
+/**
+ * Load an AVIF that carries an ISO 21496-1 gain map: decode the base and
+ * gain-map image items, parse the tmap metadata, and feed the existing GPU
+ * gain-map compositor — identical in spirit to the Ultra HDR JPEG path, just a
+ * different container.
+ */
+async function loadAVIFGainMap(buffer, info) {
+  const view = new DataView(buffer);
+  const { meta, tmapId, baseItemId, gainItemId } = info;
+
+  // tmap metadata item payload -> gainMeta. Read it first: it is cheap, and it
+  // tells us whether this file is one we can render before decoding anything.
+  const tmapExtents = meta.iloc.get(tmapId);
+  if (!tmapExtents || !tmapExtents.length) {
+    throw new Error('AVIF gain map: tmap metadata item has no data');
+  }
+  const [tOff, tLen] = tmapExtents[0];
+  const tmapBytes = new Uint8Array(buffer, tOff, tLen);
+  const gainMeta = parseTmapMetadata(tmapBytes);
+  if (gainMeta.baseRenditionIsHDR) {
+    // The compositor applies the gain map on top of an SDR base. A file whose
+    // base is the HDR rendition would be recovered with the wrong formula.
+    throw new UnsupportedAVIFError('gain map with an HDR base image is not supported');
+  }
+
+  // Base is decoded as 8-bit sRGB (gain-map base renditions are SDR sRGB);
+  // the gain map is a non-colour multiplier map, also 8-bit here.
+  const [baseDecoded, gainDecoded] = await Promise.all([
+    decodeAVIFItem(view, meta, baseItemId, buffer, { depth: 8 }),
+    decodeAVIFItem(view, meta, gainItemId, buffer, { depth: 8 }),
+  ]);
+
+  validateRatio(baseDecoded.width, baseDecoded.height);
+  const letterboxed = baseDecoded.width / baseDecoded.height > RATIO + 1e-3;
+
+  const basePb = letterboxPixelBuffer({
+    data: baseDecoded.data,
+    width: baseDecoded.width,
+    height: baseDecoded.height,
+    kind: 'u8',
+    flipY: true,
+  });
+  const gainPb = letterboxPixelBuffer({
+    data: gainDecoded.data,
+    width: gainDecoded.width,
+    height: gainDecoded.height,
+    kind: 'u8',
+    flipY: true,
+  });
+
+  const sdrTexture = textureFromU8(basePb, SRGBColorSpace);
+  const gainTexture = textureFromU8(gainPb, LinearSRGBColorSpace);
+  const previewBitmap = await pixelBufferToPreview(basePb, null);
+
+  return {
+    hdr: { sdrTexture, gainTexture, gainMeta },
+    texture: null,
+    format: 'AVIF (gain map)',
+    width: basePb.width,
+    height: basePb.height,
+    ratio: basePb.width / basePb.height,
+    isHDR: true,
+    hdrKind: 'gainmap',
+    letterboxed,
+    previewBitmap,
+    decoder: 'avif-gainmap-gpu',
   };
 }
 

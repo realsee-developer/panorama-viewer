@@ -76,6 +76,7 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 20;
+  overflow-y: auto;
   background: var(--bg);
   transition: background 0.2s ease, opacity 0.25s ease;
 }
@@ -95,6 +96,9 @@ body {
 
 .dropzone__inner {
   position: relative;
+  /* Auto margins centre the box but, unlike align-items:center, let it scroll
+     from the top when it is taller than the viewport (short landscape phones). */
+  margin: auto;
   width: min(78vw, 560px);
   border: 1px solid var(--line);
   padding: clamp(28px, 6vw, 64px);
@@ -113,7 +117,7 @@ body {
   font-size: 15px;
   line-height: 1.7;
   color: var(--fg);
-  margin-bottom: 32px;
+  margin-bottom: 20px;
 }
 
 .dropzone__hint strong {
@@ -121,10 +125,32 @@ body {
   font-weight: 600;
 }
 
-.muted {
-  color: var(--muted);
+/* Supported formats: a two-column table with hairline rules. */
+.dropzone__formats {
+  list-style: none;
+  margin-bottom: 32px;
+  border-top: 1px solid var(--line);
+}
+
+.dropzone__formats li {
+  display: grid;
+  grid-template-columns: 9em 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
   font-size: 13px;
-  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+
+.dropzone__fmtname {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dropzone__fmtnote {
+  color: var(--muted);
+  letter-spacing: 0.04em;
 }
 
 .btn {
@@ -214,6 +240,46 @@ body {
   color: var(--muted);
 }
 
+/* Collapse / expand toggle (desktop only; mobile uses the modal toggle). */
+.panel__collapse {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.panel__collapse:hover,
+.panel__collapse:focus-visible {
+  color: var(--fg);
+  border-color: var(--line);
+}
+
+.panel__collapse svg {
+  transition: transform 0.2s ease;
+}
+
+/* Collapsed: keep only the header bar. */
+.panel.collapsed .panel__body {
+  display: none;
+}
+
+.panel.collapsed .panel__head {
+  border-bottom: none;
+}
+
+.panel.collapsed .panel__collapse svg {
+  transform: rotate(180deg);
+}
+
 .panel__meta {
   padding: 14px 16px;
   border-bottom: 1px solid var(--line);
@@ -278,6 +344,7 @@ body {
   letter-spacing: 0.04em;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .slider {
@@ -501,6 +568,53 @@ body {
 
   .hdrBadge {
     font-size: 10px;
+  }
+
+  /* The modal has its own open/close control, so no collapse button, and a
+     collapsed state carried over from desktop must not hide the modal body. */
+  .panel__collapse {
+    display: none;
+  }
+
+  .panel.collapsed .panel__body {
+    display: block;
+  }
+
+  .panel.collapsed .panel__head {
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* Narrow screens: stack each format's note under its name. */
+  .dropzone__formats li {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+/* Short viewports (landscape phones): tighten the empty state so the title,
+   format list and buttons all fit without scrolling. */
+@media (max-height: 500px) {
+  .dropzone__inner {
+    padding: 20px 28px;
+  }
+
+  .dropzone__title {
+    font-size: clamp(28px, 6vw, 40px);
+    margin-bottom: 14px;
+  }
+
+  .dropzone__hint {
+    font-size: 14px;
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+
+  .dropzone__formats {
+    margin-bottom: 16px;
+  }
+
+  .dropzone__formats li {
+    padding: 5px 0;
   }
 }
 

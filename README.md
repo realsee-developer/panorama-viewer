@@ -2,15 +2,15 @@
 
 **English** · [简体中文](./README_CN.md)
 
-A panorama viewer built on **three.js WebGPU**. Drag in an equirectangular panorama to explore it, with **true HDR** display for **Ultra HDR**, **EXR**, and **Radiance HDR** images.
+A panorama viewer built on **three.js WebGPU**. Drag in an equirectangular panorama to explore it, with **true HDR** display for **Ultra HDR**, **HDR AVIF** (10-bit PQ/HLG and gain map), **EXR**, and **Radiance HDR** images.
 
 🔗 **Live demo:** https://realsee-developer.github.io/panorama-viewer/
 
 ## Features
 
-- **Formats** — AVIF · JPG · PNG · Ultra HDR JPG (gain map) · OpenEXR (`.exr`) · Radiance HDR (`.hdr`)
+- **Formats** — AVIF (8-bit SDR · 10/12-bit PQ/HLG HDR · gain map) · JPG · PNG · Ultra HDR JPG (gain map) · OpenEXR (`.exr`) · Radiance HDR (`.hdr`)
 - **Controls** — drag to look around; wheel / pinch to zoom (FOV)
-- **True HDR** — Ultra HDR images render to an `rgba16float` HDR canvas; `.exr` / `.hdr` linear-float panoramas are converted to an SDR base + gain map on load and render through the same path; a live **maxDisplayBoost** slider controls how much of the gain map is applied
+- **True HDR** — Ultra HDR images, HDR AVIF (10-bit PQ/HLG and ISO 21496-1 gain map) and `.exr` / `.hdr` linear-float panoramas all render to an `rgba16float` HDR canvas. HDR AVIF is decoded via libavif-wasm (lazy-loaded); every HDR source ends up as an SDR base + gain map composited on the GPU, so a live **maxDisplayBoost** slider controls how much of the gain map is applied
 - **Minimap** — equirectangular thumbnail with your current view highlighted (click to look that way)
 - **Robust input** — aspect ratio `< 2:1` is rejected, `> 2:1` is letterboxed
 - **Responsive** — Swiss-style UI; the minimap becomes a modal on mobile

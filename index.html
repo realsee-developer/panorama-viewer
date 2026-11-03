@@ -23,9 +23,26 @@
         <div class="dropzone__inner">
           <h1 class="dropzone__title">Panorama Viewer</h1>
           <p class="dropzone__hint">
-            Drag &amp; drop an <strong>equirectangular (2:1)</strong> image file, or click to choose.<br />
-            <span class="muted">AVIF · PNG · JPG · Ultra HDR JPG · EXR · HDR</span>
+            Drag &amp; drop an <strong>equirectangular (2:1)</strong> image file, or click to choose.
           </p>
+          <ul class="dropzone__formats" aria-label="Supported formats">
+            <li>
+              <span class="dropzone__fmtname">AVIF</span>
+              <span class="dropzone__fmtnote">8-bit · 10/12-bit HDR (PQ, HLG) · gain map</span>
+            </li>
+            <li>
+              <span class="dropzone__fmtname">Ultra HDR JPG</span>
+              <span class="dropzone__fmtnote">gain map</span>
+            </li>
+            <li>
+              <span class="dropzone__fmtname">EXR · HDR</span>
+              <span class="dropzone__fmtnote">OpenEXR · Radiance, linear float</span>
+            </li>
+            <li>
+              <span class="dropzone__fmtname">JPG · PNG</span>
+              <span class="dropzone__fmtnote">SDR</span>
+            </li>
+          </ul>
           <div class="dropzone__actions">
             <button id="pickBtn" class="btn">Choose file</button>
             <button id="demoBtn" class="btn btn--ghost">Load sample</button>
@@ -55,43 +72,60 @@
     <aside id="panel" class="panel" hidden>
       <header class="panel__head">
         <span class="panel__label">META</span>
+        <!-- Desktop only: collapse the panel to just this header bar. -->
+        <button
+          id="panelCollapse"
+          class="panel__collapse"
+          type="button"
+          aria-controls="panelBody"
+          aria-expanded="true"
+          aria-label="Collapse panel"
+          title="Collapse panel"
+        >
+          <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+            <!-- Points up while expanded (the panel collapses upward); CSS flips it when collapsed. -->
+            <path d="M2 7.5 6 3.5 10 7.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+          </svg>
+        </button>
       </header>
 
-      <div class="panel__meta">
-        <dl>
-          <dt>Format</dt><dd id="metaFormat">—</dd>
-          <dt>Resolution</dt><dd id="metaRes">—</dd>
-          <dt>Aspect</dt><dd id="metaRatio">—</dd>
-          <dt>HDR</dt><dd id="metaHdr">—</dd>
-        </dl>
-      </div>
-
-      <!-- HDR boost control (shown for all HDR: Ultra HDR + converted EXR/HDR) -->
-      <div id="hdrControl" class="panel__hdr" hidden>
-        <div class="panel__hdrhead">
-          <span class="panel__hdrlabel">HDR boost (maxDisplayBoost)</span>
-          <span id="hdrBoostVal" class="panel__hdrval">—</span>
+      <div id="panelBody" class="panel__body">
+        <div class="panel__meta">
+          <dl>
+            <dt>Format</dt><dd id="metaFormat">—</dd>
+            <dt>Resolution</dt><dd id="metaRes">—</dd>
+            <dt>Aspect</dt><dd id="metaRatio">—</dd>
+            <dt>HDR</dt><dd id="metaHdr">—</dd>
+          </dl>
         </div>
-        <input
-          id="hdrBoost"
-          class="slider"
-          type="range"
-          min="1"
-          max="20"
-          step="0.1"
-          value="3"
-        />
-        <div class="panel__hdrscale">
-          <span>1× (203nit SDR)</span>
-          <span id="hdrBoostMax">—</span>
-        </div>
-      </div>
 
-      <!-- Minimap: equirectangular thumbnail + viewport overlay -->
-      <figure class="panel__map">
-        <canvas id="minimap"></canvas>
-        <figcaption class="panel__maphint">Click the map to look that way</figcaption>
-      </figure>
+        <!-- HDR boost control (shown for all HDR: Ultra HDR, HDR AVIF, EXR/HDR) -->
+        <div id="hdrControl" class="panel__hdr" hidden>
+          <div class="panel__hdrhead">
+            <span class="panel__hdrlabel">HDR boost (maxDisplayBoost)</span>
+            <span id="hdrBoostVal" class="panel__hdrval">—</span>
+          </div>
+          <input
+            id="hdrBoost"
+            class="slider"
+            type="range"
+            min="1"
+            max="20"
+            step="0.1"
+            value="3"
+          />
+          <div class="panel__hdrscale">
+            <span>1× (203nit SDR)</span>
+            <span id="hdrBoostMax">—</span>
+          </div>
+        </div>
+
+        <!-- Minimap: equirectangular thumbnail + viewport overlay -->
+        <figure class="panel__map">
+          <canvas id="minimap"></canvas>
+          <figcaption class="panel__maphint">Click the map to look that way</figcaption>
+        </figure>
+      </div>
     </aside>
 
     <!-- HDR support status badge -->

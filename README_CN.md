@@ -2,15 +2,15 @@
 
 **简体中文** · [English](./README.md)
 
-一个基于 **three.js WebGPU** 的全景图查看器。拖入一张等距圆柱（equirectangular）全景图即可浏览，支持 **Ultra HDR**、**EXR**、**Radiance HDR** 图片的真 HDR 显示。
+一个基于 **three.js WebGPU** 的全景图查看器。拖入一张等距圆柱（equirectangular）全景图即可浏览，支持 **Ultra HDR**、**HDR AVIF**（10-bit PQ/HLG 及 gain map）、**EXR**、**Radiance HDR** 图片的真 HDR 显示。
 
 🔗 **在线预览：** https://realsee-developer.github.io/panorama-viewer/
 
 ## 功能
 
-- **格式** — AVIF · JPG · PNG · Ultra HDR JPG（gain map）· OpenEXR（`.exr`）· Radiance HDR（`.hdr`）
+- **格式** — AVIF（8-bit SDR · 10/12-bit PQ/HLG HDR · gain map）· JPG · PNG · Ultra HDR JPG（gain map）· OpenEXR（`.exr`）· Radiance HDR（`.hdr`）
 - **交互** — 拖拽改变视角；滚轮 / 双指 pinch 缩放（FOV）
-- **真 HDR** — Ultra HDR 图片渲染到 `rgba16float` HDR 画布；`.exr` / `.hdr` 线性浮点全景图在加载时转换为 SDR base + gain map，走同一条渲染路径；提供实时 **maxDisplayBoost** 滑块控制增益图的应用强度
+- **真 HDR** — Ultra HDR 图片、HDR AVIF（10-bit PQ/HLG 及 ISO 21496-1 gain map）、`.exr` / `.hdr` 线性浮点全景图都渲染到 `rgba16float` HDR 画布。HDR AVIF 通过 libavif-wasm 解码（按需懒加载）；所有 HDR 来源最终都转换为 SDR base + gain map 在 GPU 上合成，提供实时 **maxDisplayBoost** 滑块控制增益图的应用强度
 - **缩略图** — 等距圆柱小地图高亮当前视角区域（点击可看向对应方向）
 - **输入校验** — 宽高比 `< 2:1` 报错，`> 2:1` 自动上下留黑边
 - **响应式** — 瑞士风格 UI；移动端缩略图以弹层显示

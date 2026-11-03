@@ -8,6 +8,8 @@ Technical notes for the Panorama Viewer. For a quick overview and usage, see the
 | --- | --- |
 | `src/main.js` | Wires everything together: UI, drag-drop, status/meta panels, the HDR-boost slider, and the responsive layout. |
 | `src/loader.js` | Decodes a dropped file. Sniffs the format, validates aspect ratio, and for Ultra HDR parses the gain map in-house. |
+| `src/avif.js` | AVIF container work: ISOBMFF/HEIF box parsing, standalone-item repackaging for the WASM decoder, and ISO 21496-1 `tmap` gain-map metadata parsing. |
+| `src/color.js` | HDR transfer functions (PQ / HLG) and BT.2020 → sRGB gamut conversion for >8-bit AVIF. |
 | `src/viewer.js` | `WebGPURenderer` setup, camera controls, SDR/HDR background rendering, and the live gain-map GPU compositing node. |
 | `src/hdr.js` | Display-HDR detection and the WebGPU HDR canvas reconfiguration. |
 | `src/minimap.js` | Equirectangular thumbnail with the real view frustum projected as the highlight. |
@@ -90,6 +92,98 @@ HDR headroom is measured in **stops** (log2). Real HDR displays offer only ~1.5�
 
 > Treating `HDRCapacityMax` (e.g. 9.97) directly as a linear boost would give ~1000×, which is physically meaningless for any real display.
 
+## AVIF decoding (8-bit / 10-bit HDR / gain map)
+
+The browser's `createImageBitmap` decodes every AVIF structure (grid, rotation,
+alpha, ...) but only ever yields an **8-bit SDR** rendition: it discards the
+extra precision of 10/12-bit HDR and silently ignores an embedded ISO 21496-1
+gain map. So only the cases that need more than that go through **libavif
+compiled to WebAssembly** (`@jsquash/avif`), with the container parsed in-house
+(`src/avif.js`). Plain and 8-bit SDR AVIF stay on the browser decoder, like
+JPG/PNG. The decoder WASM (≈340 KB gzipped) is **lazy-loaded** only when an HDR
+AVIF is opened, as its own code-split chunk.
+
+`loadAVIF` (`loader.js`) classifies the file and takes one of these paths:
+
+```mermaid
+flowchart TD
+    A["AVIF buffer"] --> B["inspectAVIF: parse meta (pitm/iinf/iloc/iref/iprp)"]
+    B --> C{"tmap item grouped with base + gain?"}
+    C -->|"yes"| C2{"plain av01 items and an SDR base?"}
+    C2 -->|"yes"| D["loadAVIFGainMap"]
+    C2 -->|"no (grid / HDR base)"| X["SDR fallback: browser decode, labelled 'AVIF (SDR fallback)'"]
+    C -->|"no"| E{"depth > 8 and PQ/HLG?"}
+    E -->|"no"| G["loadSDR: browser decoder (8-bit SDR)"]
+    E -->|"yes"| E2{"primary is a plain av01 item?"}
+    E2 -->|"no (grid)"| X
+    E2 -->|"yes"| F["loadAVIFHDR"]
+
+    D --> D1["decode base + gain items (8-bit)"]
+    D --> D2["parseTmapMetadata -> gainMeta (log2)"]
+    D1 --> H["GPU gain-map compositor (viewer)"]
+    D2 --> H
+
+    F --> F1["decode item at native depth -> code values (Uint16)"]
+    F1 --> F2["color.js: LUT transfer (+ HLG OOTF) + BT.2020->sRGB -> linear half-float"]
+    F2 --> F3["hdrToGainMap (no auto-exposure) -> SDR base + gain map"]
+    F3 --> H
+
+    G --> I["scene.background (SDR)"]
+```
+
+### Repackaging image items for the decoder
+
+Each image's bytes in the AVIF `mdat` are a **bare AV1 OBU stream**, not a full
+AVIF file, so the WASM decoder can't consume them directly. `repackItemToAVIF`
+wraps an item's payload in the smallest valid AVIF — `ftyp` + `meta`
+(`hdlr`/`pitm`/`iinf`/`iprp`/`iloc`) + `mdat` — reusing the item's original
+`av1C` / `ispe` / `pixi` property boxes verbatim so the decoder sees the exact
+codec config and dimensions. This was verified **bit-exact** against libavif's
+native decode of the same payload.
+
+### Why not the bundled libavif for gain maps
+
+`@jsquash/avif` bundles **libavif v1.0.1**, which predates the gain-map API
+(added experimentally in v1.1.0, enabled by default in v1.2.0). So the WASM
+decodes the AV1 image items, but the **container walk and `tmap` parsing are our
+own** (`src/avif.js`). The gain-map metadata maps onto the same log2-space
+`gainMeta` shape as the Ultra HDR JPEG path, so both render through the one GPU
+compositor in `viewer.js`.
+
+### 10/12-bit HDR colour
+
+`@jsquash/avif` returns >8-bit output as raw code values (`Uint16Array`,
+0..2^depth−1) in the file's transfer function and primaries — no tone mapping
+applied. `color.js` turns those into scene-linear, sRGB-primary half-float:
+
+- **Transfer**: evaluated through a per-code lookup table (a 10-bit image has
+  only 1024 distinct values, so this takes an 8K conversion from ~3 s to
+  ~0.35 s).
+  - **PQ** (SMPTE ST 2084): EOTF to nits, divided by the 203-nit SDR reference
+    white (BT.2408), so SDR white = 1.0.
+  - **HLG** (ARIB STD-B67): inverse OETF to scene-linear, then the BT.2100 OOTF
+    for a 1000-nit display (`Fd = 1000 · Ys^0.2 · Fs`, `Ys` = luminance in the
+    file's primaries), divided by 203. Signal 0.75 (HLG diffuse white) maps to
+    1.0. The OOTF scales all three channels by one luminance-derived factor, so
+    hue is preserved.
+- **Primaries**: a linear BT.2020 → sRGB (Rec.709) matrix; negative
+  out-of-gamut values are clipped, highlights above 1.0 are kept. Other
+  primaries (e.g. Display P3) are currently treated as sRGB.
+
+The result feeds the existing `hdrToGainMap`, so 10-bit AVIF renders through the
+same SDR-base + gain-map pipeline as `.exr` / `.hdr`, with one difference:
+`.exr` / `.hdr` are scene-referred (arbitrary absolute scale), so `hdrToGainMap`
+auto-exposes them to middle grey. PQ / HLG are display-referred (SDR white is
+already 1.0), so AVIF passes `autoExposure: false`. Auto-exposing them darkened
+bright scenes (a measured factor of 0.44 on the sample panorama).
+
+### Fallbacks
+
+The WASM path only understands plain `av01` image items. HDR files built from
+`grid` (tiled) items, or any WASM decode failure, fall back to the browser's
+SDR rendition and are labelled `AVIF (SDR fallback)` in the format field so the
+downgrade is visible.
+
 ## True HDR canvas
 
 We create the `WebGPURenderer` with `outputType: HalfFloatType`. Since three r171+ this makes the renderer configure the WebGPU canvas natively for HDR: the preferred canvas format becomes `rgba16float` and the context tone mapping is set to `"extended"`. Pixels above the SDR white point (`> 1.0`) then map into the display's HDR headroom instead of being clamped. For SDR content (values ≤ 1.0) it's a no-op, so the half-float canvas is used unconditionally.
@@ -119,6 +213,7 @@ The visible region of a perspective camera is **not** a rectangle on an equirect
 ## Build & deploy
 
 - `base: './'` (relative asset URLs) so the build works from any GitHub Pages project subpath.
+- `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.txt` live only at the repository root. A small Vite plugin in `vite.config.js` emits them into the root of `dist/` at build time (and serves them from the dev server at the same URLs), so there are no duplicate copies under `public/`. `THIRD_PARTY_NOTICES.txt` reproduces the upstream license texts verbatim (three.js, @jsquash/avif, libavif, libaom); when a bundled dependency changes, update it from that dependency's own license file.
 - `.github/workflows/deploy.yml` builds and publishes `dist/` to GitHub Pages on push to `main`.
 
 ## Tests
@@ -130,6 +225,11 @@ npm run build && npm run preview   # in one terminal
 npm test            # aspect-ratio handling, SDR render, drag + minimap click
 npm run test:mobile # modal minimap + FOV zoom
 npm run test:uhdr   # Ultra HDR decode, true-HDR path, boost control
+npm run test:avif   # AVIF 8-bit SDR, 10-bit PQ HDR, and gain-map decode
 ```
+
+> The AVIF test fixtures (`test/fixtures/avif_*.avif`) are generated with
+> libavif's `avifenc` / `avifgainmaputil`; `test/run-all.sh` boots the preview
+> and runs the smoke, uhdr and avif suites in one go.
 
 > Note: a headless `rgba16float` canvas reads back near-black in screenshots, so the tests use a `?nohdr` flag to verify rendering in the SDR-tonemapped path, and inspect decoded texture stats directly for the HDR path.

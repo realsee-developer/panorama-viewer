@@ -27,6 +27,7 @@ const hdrBadge = $('hdrBadge');
 const statDisplay = $('statDisplay');
 const statCanvas = $('statCanvas');
 const mapToggle = $('mapToggle');
+const panelCollapse = $('panelCollapse');
 const toast = $('toast');
 const loader = $('loader');
 
@@ -124,6 +125,19 @@ function bindUI() {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
     if (file) handleFile(file);
+  });
+
+  // Desktop: collapse the META panel to its header bar. The state lives on the
+  // element, so it survives loading another file. The CSS ignores it on mobile,
+  // where the panel is a modal with its own toggle.
+  panelCollapse.addEventListener('click', () => {
+    const collapsed = panel.classList.toggle('collapsed');
+    panelCollapse.setAttribute('aria-expanded', String(!collapsed));
+    const label = collapsed ? 'Expand panel' : 'Collapse panel';
+    panelCollapse.setAttribute('aria-label', label);
+    panelCollapse.title = label;
+    // The minimap canvas had no size while hidden; re-measure it on expand.
+    if (!collapsed) minimap.resize();
   });
 
   // Mobile minimap modal toggle

@@ -15,9 +15,11 @@
     "preview": "vite preview",
     "test": "node test/smoke.mjs",
     "test:mobile": "node test/mobile.mjs",
-    "test:uhdr": "node test/uhdr.mjs"
+    "test:uhdr": "node test/uhdr.mjs",
+    "test:avif": "node test/avif.mjs"
   },
   "dependencies": {
+    "@jsquash/avif": "^2.1.1",
     "three": "^0.186.0"
   },
   "devDependencies": {
