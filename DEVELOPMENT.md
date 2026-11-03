@@ -16,34 +16,38 @@ Technical notes for the Panorama Viewer. For a quick overview and usage, see the
 
 ## Pipeline
 
+Every format ends in one of two shapes: a single **SDR texture**, or an **SDR base texture + gain-map texture + metadata**. The viewer renders only those two. See [Formats: loading and display](#formats-loading-and-display) for the per-format details.
+
 ```mermaid
 flowchart TD
-    A["Drop / pick / load sample"] --> B["loadPanorama"]
-    B --> C{"sniffFormat + isUltraHDR?"}
+    A["Drop / pick / load sample"] --> B["loadPanorama: sniffFormat (magic bytes, then file extension)"]
 
-    C -->|"Ultra HDR JPG"| D["parseUltraHDRJPEG (walk JPEG segments)"]
-    D --> D1["MPF APP2: locate primary + gain-map sub-images"]
-    D --> D2["XMP APP1 of gain-map image: GainMapMax / Gamma / HDRCapacityMax"]
-    D1 --> E["Upload SDR + gain-map as GPU textures"]
-    D2 --> E
+    B -->|"JPEG with gain-map XMP"| U["Ultra HDR: parseUltraHDRJPEG (MPF + XMP)"]
+    B -->|"AVIF"| V["loadAVIF (see AVIF decoding)"]
+    B -->|"EXR / Radiance HDR"| W["loadFloatHDR: three.js loader -> half-float"]
+    B -->|"JPEG / PNG / other"| S["loadSDR: createImageBitmap"]
 
-    C -->|"AVIF / JPG / PNG"| F["createImageBitmap"]
-    F --> G{"ratio check"}
-    G -->|"under 2:1"| GX["reject: AspectRatioError"]
-    G -->|"over 2:1"| GL["letterbox to 2:1"]
-    G -->|"exactly 2:1"| GE["use as-is"]
-    GL --> H["SDR equirect Texture"]
-    GE --> H
+    U --> U1["decode base + gain JPEGs with createImageBitmap"]
+    V -->|"gain map"| V1["decode base + gain items (libavif-wasm), tmap -> gainMeta"]
+    V -->|"10/12-bit PQ/HLG"| V2["decode code values, color.js -> linear half-float"]
+    V -->|"8-bit SDR or fallback"| S
+    W --> W1["letterbox (half-float)"]
+    V2 --> W1
+    W1 --> W2["hdrToGainMap: AgX tone map -> SDR base + gain map"]
 
-    E --> I["viewer.setPanorama(hdr)"]
-    H --> J["viewer.setPanorama(sdr)"]
+    S --> S1["letterbox -> 8-bit sRGB DataTexture"]
+    U1 --> U2["letterbox base + gain -> 2 DataTextures"]
+    V1 --> U2
 
-    I --> K["scene.backgroundNode: TSL gain-map compositing"]
+    S1 --> J["viewer.setPanorama(texture)"]
+    U2 --> I["viewer.setPanorama({ sdrTexture, gainTexture, gainMeta })"]
+    W2 --> I
+
     J --> L["scene.background = texture"]
-
+    I --> K["scene.backgroundNode: TSL gain-map compositing"]
     I --> M["renderer outputType: HalfFloatType -> rgba16float canvas + extended tone mapping"]
-    K --> N["WebGPURenderer renders equirectangular background"]
-    L --> N
+    L --> N["WebGPURenderer renders the equirectangular background"]
+    K --> N
     M --> N
 
     N --> O["Canvas: true HDR output (values above 1.0 map to display headroom)"]
@@ -52,11 +56,171 @@ flowchart TD
     P -.-> K
 ```
 
+Aspect-ratio policy applies to every format: `< 2:1` is rejected (`AspectRatioError`), exactly `2:1` is used as-is, `> 2:1` is letterboxed onto a 2:1 buffer with black bars. The letterbox runs once, on a format-agnostic `PixelBuffer`, so SDR, Ultra HDR, AVIF and EXR/HDR behave identically.
+
 ## Rendering
 
 `WebGPURenderer` (`three/webgpu`) renders the panorama as an **equirectangular background** (`scene.background` + equirectangular mapping) with the camera at the origin, shading each pixel from the camera ray direction. The background path is far more robust for large half-float HDR textures than mapping them onto a sphere material (which rendered black for 8K half-float textures on WebGPU).
 
 Camera controls: pointer drag updates yaw/pitch (`lon`/`lat`); wheel and two-finger pinch change the camera FOV. Latitude is clamped to ±85° to avoid gimbal issues at the poles.
+
+## Formats: loading and display
+
+### Summary
+
+| Format | Detected by | Decoder | What reaches the GPU | Render path | HDR boost slider |
+| --- | --- | --- | --- | --- | --- |
+| **JPG / PNG** | magic bytes | browser (`createImageBitmap`) | one 8-bit sRGB texture | `scene.background` | hidden |
+| **AVIF, 8-bit SDR** | `ftyp` brand `avi*` | browser (`createImageBitmap`) | one 8-bit sRGB texture | `scene.background` | hidden |
+| **AVIF, 10/12-bit PQ or HLG** | `ftyp` brand, then `pixi` depth + `colr` CICP | libavif-wasm | SDR base + gain map, **synthesised on load** | TSL gain-map node | shown |
+| **AVIF with a gain map** | `ftyp` brand, then a `tmap` item | libavif-wasm (base and gain items) | SDR base + gain map **from the file** | TSL gain-map node | shown |
+| **Ultra HDR JPG** | JPEG containing `hdrgm:` / `GContainer` / `Item:Semantic="GainMap"` in the first 256 KB | browser, on the two sub-images | SDR base + gain map **from the file** | TSL gain-map node | shown |
+| **OpenEXR** (`.exr`) | magic `76 2F 31 01` (or the extension) | three.js `EXRLoader`, lazy-loaded | SDR base + gain map, **synthesised on load** | TSL gain-map node | shown |
+| **Radiance HDR** (`.hdr`) | `#?RADIANCE` / `#?RGBE` (or the extension) | three.js `HDRLoader`, lazy-loaded | SDR base + gain map, **synthesised on load** | TSL gain-map node | shown |
+
+"Synthesised" means the file only holds one HDR image, so `hdrToGainMap` builds the SDR base and the gain map from it (see [Converting between formats](#converting-between-formats)). "From the file" means both images already exist and are used as authored.
+
+Detection trusts the **content**, not the file name; the extension is only a fallback for `.exr` / `.hdr` when the magic bytes are inconclusive.
+
+### Display strategy
+
+Whatever the format, the viewer shows one of two things.
+
+**SDR image** (JPG, PNG, 8-bit AVIF)
+- One `DataTexture` tagged `SRGBColorSpace`, assigned to `scene.background` with equirectangular mapping.
+- Filtering is bilinear only: `DataTexture` carries no auto-generated mipmaps. That keeps every format on one code path.
+- The HDR panel control is hidden and the META panel shows `SDR`.
+
+**HDR image** (everything else)
+- Two textures: the sRGB base (`SRGBColorSpace`, linearised by three on sampling) and the gain map (`LinearSRGBColorSpace`, a multiplier map, never colour-managed).
+- A TSL node set as `scene.backgroundNode` recovers HDR per pixel, per frame, on the GPU (formula under [HDR recovery](#hdr-recovery-on-the-gpu)). The only live input is the `maxDisplayBoost` uniform, so the slider never triggers a re-decode.
+- The output goes to the `rgba16float` canvas with extended tone mapping ([True HDR canvas](#true-hdr-canvas)), so values above 1.0 use the display's headroom.
+- On a display without HDR, the same values are simply shown in the SDR range. The slider then starts at `1×`, because a higher value only clips highlights.
+
+What the user sees at each boost value:
+
+| Boost | Result |
+| --- | --- |
+| `1×` | the SDR base, unchanged |
+| in between | the gain map applied partially, scaled by `weight` |
+| `min(20×, capacity)` | the full HDR intent the file declares |
+
+Other behaviour that applies to all formats:
+
+- **Orientation.** Bitmap-based decoders return top-origin rows and set `flipY: true` on the `PixelBuffer`; EXR/HDR follow the three.js loader's own `texture.flipY`. The gain-map node samples with an explicit UV, where the texture's `flipY` does not apply, so it flips V itself. Getting this wrong shows up as an upside-down image only in one format.
+- **Gain map resolution** may differ from the base (AVIF and Ultra HDR gain maps are often half size). Both are letterboxed independently to the same 2:1 target and sampled with the same UV, so they stay aligned.
+- **Minimap thumbnail.** Always the 8-bit SDR base, at most 1024 px wide, so the HDR formats do not need a separate preview.
+- **META panel.** `Format` names what was actually used, e.g. `AVIF (gain map)`, `AVIF 10-bit HDR (PQ)`, or `AVIF (SDR fallback)` when an HDR file had to be shown as SDR.
+- **`?nohdr`.** Skips `enableHDR()` so the canvas stays SDR-tonemapped. A headless `rgba16float` canvas reads back near-black, so the tests use this to inspect the image.
+
+## Converting between formats
+
+There are two kinds of conversion: the ones the viewer does itself, and the ones you do beforehand with external tools to produce input files.
+
+### Inside the viewer
+
+All formats are first turned into a format-agnostic `PixelBuffer` (`data`, `width`, `height`, `kind: 'u8' | 'half'`, `flipY`), letterboxed once, and only then into textures.
+
+```
+JPG / PNG / 8-bit AVIF   -> PixelBuffer(u8)                    -> sRGB texture
+Ultra HDR JPG            -> 2 x PixelBuffer(u8)                -> base + gain textures
+AVIF with gain map       -> 2 x PixelBuffer(u8)                -> base + gain textures
+10/12-bit PQ/HLG AVIF    -> codes -> PixelBuffer(half, linear) -> hdrToGainMap -> base + gain textures
+OpenEXR / Radiance HDR   -> PixelBuffer(half, linear)          -> hdrToGainMap -> base + gain textures
+```
+
+**`hdrToGainMap`** (single HDR image to base + gain map), in `loader.js`:
+
+1. One pass finds the peak value and the geometric-mean luminance.
+2. `maxContentBoost = clamp(peak, 1.0001, 2^14)`; this becomes the gain map's range and the content's HDR capacity.
+3. The SDR base is `AgX(hdr * exposure)`, quantised to 8-bit sRGB. AgX rolls highlights off with little hue shift.
+4. The gain map is derived **from the quantised base**, so recovery is consistent with what is actually stored:
+
+```
+ratio = (hdr + 1/64) / (srgbToLinear(code) + 1/64)
+gain  = round( min(1, log2(max(1, ratio)) / log2(maxContentBoost)) * 255 )
+```
+
+`exposure` depends on the source:
+
+| Source | `exposure` | Why |
+| --- | --- | --- |
+| `.exr` / `.hdr` | `0.18 / geometricMean` (auto) | scene-referred, absolute scale is arbitrary |
+| PQ / HLG AVIF | `1` | display-referred, SDR white is already 1.0; auto-exposure measurably darkened bright scenes |
+
+Nothing is converted back: the viewer never writes a file. Display values are never stored, only the textures it needs.
+
+### Producing input files with external tools
+
+The commands below were run against this repository's samples. `avifenc`, `avifdec` and `avifgainmaputil` come with libavif (`brew install libavif`); `ffmpeg` is only needed for the float formats.
+
+**Inspect a file**
+
+```bash
+avifdec --info file.avif                 # bit depth, CICP primaries / transfer / matrix
+avifgainmaputil printmetadata file.avif  # gain-map headroom, min / max, offsets, gamma
+avifgainmaputil extractgainmap file.avif gain.png
+```
+
+**Image to AVIF**
+
+```bash
+# 8-bit SDR
+avifenc --depth 8 --yuv 420 in.png out.avif
+
+# 10-bit HDR from a 16-bit PNG that already holds PQ / BT.2020 code values
+avifenc --depth 10 --yuv 444 --cicp 9/16/9 --range full in.png out.avif   # PQ
+avifenc --depth 10 --yuv 444 --cicp 9/18/9 --range full in.png out.avif   # HLG
+avifenc --depth 12 --yuv 444 --cicp 9/16/9 --range full in.png out.avif   # 12-bit PQ
+```
+
+`--cicp P/T/M` is primaries / transfer / matrix: `9` is BT.2020, `16` is PQ, `18` is HLG. The viewer reads these tags, so a file without them is treated as sRGB.
+
+**SDR + HDR to a gain-map AVIF**
+
+```bash
+avifgainmaputil combine sdr.png hdr_pq.png out.avif \
+    --cicp-alternate 9/16/9 --downscaling 2 --ignore-profile
+```
+
+- The first image is the **base** (what viewers without gain-map support show), the second the **alternate**, the result of fully applying the gain map.
+- `--downscaling 2` stores the gain map at half resolution; the viewer handles that.
+- `combine` refuses a base that carries an ICC profile (`Computing gain maps for images with ICC profiles is not supported`). Export the base to a plain PNG first.
+
+> **Check the declared headroom after `combine`.** `--max-headroom` defaults to 4 and caps the headroom written to the file, but the gain map itself is computed from the images. If the alternate is much brighter than 4 stops, `printmetadata` shows `Alternate headroom: 4` next to a `Gain Map Max` well above 4 (we saw 6.2). A viewer scales the gain by *display headroom / declared headroom*, so the image comes out several times too bright. Make the alternate image's real headroom match what is declared: either render it for the headroom you want (for a 4-stop file, the Ultra HDR original *at 4 stops*, not at full boost), or set `--max-headroom` to match.
+
+**Ultra HDR JPG to another format**
+
+- **To an SDR JPG** (lossless): the primary image is the SDR rendition. Take the bytes up to the primary's end (from the MPF directory), and drop the **MPF** `APP2` and the gain-map **XMP** `APP1` segments. Keep the entropy-coded scan byte-identical, so nothing is re-compressed. The segments must go: with `GContainer` / `hdrgm` left in, the viewer detects Ultra HDR and then fails to find the gain map.
+- **To PNG**: decode that SDR JPEG and save the pixels (lossless relative to the JPEG, but an 8K PNG is about 22 MB).
+- **To a 10-bit or gain-map AVIF**: `avifgainmaputil convert` reads Ultra HDR JPEGs directly, but needs a build with libxml2 (Homebrew's does not have it). Otherwise rebuild the HDR yourself: decode the base and the gain map, apply the recovery formula from [HDR recovery](#hdr-recovery-on-the-gpu) at the headroom you want to target, PQ-encode the result (BT.709 linear to BT.2020 first, SDR white = 203 nit), and feed that to `avifenc` or `combine`. Reconstructing at the file's *full* capacity (about 1000x here) overflows PQ's 10,000 nit ceiling, so pick a realistic target such as 4 stops.
+
+**Float HDR sample files** (for testing the EXR / Radiance paths)
+
+```bash
+ffmpeg -f lavfi -i testsrc2=size=1024x512 -frames:v 1 -vf format=gbrpf32le -c:v exr sample.exr
+ffmpeg -f lavfi -i testsrc2=size=1024x512 -frames:v 1 -vf format=gbrpf32le -c:v hdr sample.hdr
+```
+
+### Conversion cheat sheet
+
+| From | To | How |
+| --- | --- | --- |
+| Ultra HDR JPG | SDR JPG | strip MPF + gain-map XMP, keep the scan data |
+| SDR JPG | PNG | decode and save |
+| PNG (PQ, 16-bit) | 10/12-bit AVIF | `avifenc --depth 10 --cicp 9/16/9` |
+| SDR + HDR images | gain-map AVIF | `avifgainmaputil combine` |
+| Ultra HDR JPG | gain-map AVIF | `avifgainmaputil convert` (needs libxml2), or rebuild the HDR and `combine` |
+| gain-map AVIF | gain map as PNG | `avifgainmaputil extractgainmap` |
+| EXR / Radiance HDR | anything the viewer shows | open it directly: `hdrToGainMap` builds the base and gain map |
+
+### Known limitations
+
+- **Gain-map parameters are per-file scalars.** An AVIF `tmap` can carry per-channel min / max / gamma / offsets; only channel 0 is used (the sample file has channel maxima of 3.28, 2.53 and 3.23), so highlights can be tinted slightly.
+- **HDR base images are not supported.** A `tmap` whose base headroom exceeds its alternate headroom is shown as SDR (`AVIF (SDR fallback)`). The gain-map node assumes an SDR base.
+- **Tiled HDR AVIF (`grid`) is not supported.** It is shown as SDR. Tiled SDR AVIF is fine: it goes through the browser decoder.
+- **Only BT.709 / BT.2020 primaries are converted.** Display P3 AVIF (CICP primaries 12) is treated as sRGB, so it comes out slightly desaturated.
+- **AVIF is recognised by its major brand.** `sniffFormat` calls a file AVIF when the `ftyp` major brand starts with `avi` (`avif`, `avis`). A file whose major brand is `mif1` with `avif` only among the compatible brands is classed as HEIF and decoded by the browser as 8-bit SDR, silently losing its HDR data. `avifenc` writes `avif` as the major brand, so files made with it are not affected.
 
 ## Ultra HDR decoding
 
@@ -88,9 +252,18 @@ Because compositing happens per-frame on the GPU, **`maxDisplayBoost` is a unifo
 
 ### maxDisplayBoost range
 
-HDR headroom is measured in **stops** (log2). Real HDR displays offer only ~1.5–4 stops over SDR white (a great display such as a modern MacBook Pro ≈ 4 stops / 16×). So the slider is capped at **4 stops (16×)** regardless of the (often very large) `HDRCapacityMax` the file declares, and defaults to a strong-but-sane **3 stops (8×)**. The `weight` term then adapts the applied gain to the chosen display headroom — exactly how gain maps are meant to scale across displays.
+`maxDisplayBoost` is a **linear multiple of SDR white**, as in five-webgpu. The UI labels each value with its peak luminance in nits, assuming the BT.2408 reference white of 203 nit (`SDR_WHITE_NITS` in `main.js`).
 
-> Treating `HDRCapacityMax` (e.g. 9.97) directly as a linear boost would give ~1000×, which is physically meaningless for any real display.
+| | Value | Meaning |
+| --- | --- | --- |
+| Slider minimum | `1×` | SDR white, 203 nit: the pure SDR rendition |
+| Default, HDR display | `3×` | about 609 nit, close to the HDR600 peak (`DEFAULT_MAX_DISPLAY_BOOST`) |
+| Default, SDR display | `1×` | highlights would only clip, so start from pure SDR |
+| Slider maximum | `min(20×, content capacity)` | never beyond what the file declares (`SLIDER_MAX_DISPLAY_BOOST`) |
+
+The value is converted to log2 (`setMaxDisplayBoost`) and fed to the `weight` term above, which scales the applied gain between `hdrCapacityMin` and `hdrCapacityMax`. This is how gain maps are meant to adapt to a display's headroom.
+
+> Treating `HDRCapacityMax` (e.g. 9.97 for the sample Ultra HDR file) directly as a linear boost would give ~1000×, which is physically meaningless for any real display. The slider cap and the `weight` term are what keep the result sane.
 
 ## AVIF decoding (8-bit / 10-bit HDR / gain map)
 
